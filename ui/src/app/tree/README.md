@@ -1,6 +1,6 @@
 # tree/
 
-**Purpose:** Route segment for tree views.
+**Purpose:** Route segment for persisted tree views.
 
 **May depend on:** ui/src/components, ui/src/lib.
 

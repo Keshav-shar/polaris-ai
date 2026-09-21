@@ -1,14 +1,14 @@
 # infra/
 
-**Purpose:** AWS CDK (TypeScript) infrastructure as code. Provisions only free-tier-eligible resources.
+**Purpose:** Infrastructure notes. There is no IaC: the user creates the AWS resources by hand (`docs/setup.md` → "AWS setup"), as the design doc intends.
 
-**May depend on:** aws-cdk-lib, constructs. Built artefacts of service/.
+**May depend on:** Nothing.
 
-**Must not depend on:** service/src imports (infra references bundled output, not source internals).
+**Must not depend on:** service/src imports.
 
 **Planned contents:**
-See the sub-folders; this folder holds no files of its own.
+- None. Resource list and settings: `docs/aws-retrofit.md`.
 
 **Design notes:**
-- Issue 9: accounts created after 2025-07-15 get a credit-based Free Plan (about 6 months). Lambda, DynamoDB, SQS and CloudWatch limits remain Always Free, but confirm each service on the AWS Free Tier page before deploy (plan step 11).
-- Set a budget alarm before the first deploy.
+- If IaC is ever added (CDK), it must reproduce exactly the manual resources, and stay free-tier.
+- Accounts created after 2025-07-15 get a credit-based Free Plan. Confirm each service before deploy; set the $1 budget alarm first.

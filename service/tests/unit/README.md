@@ -1,11 +1,20 @@
 # unit/
 
-**Purpose:** Fast, deterministic tests with no network. Ports are replaced by fakes.
+**Purpose:** Fast, deterministic tests with no network. Ports are replaced by in-memory adapters or fakes; AWS SDK clients get a stubbed `send`.
 
-**May depend on:** domain, application, fixtures.
+**May depend on:** domain, application, infrastructure (with stubbed clients), interfaces, fixtures.
 
-**Must not depend on:** Real LLMs, real databases.
+**Must not depend on:** Real LLMs, real databases, real AWS.
 
 **Planned contents:**
-- `domain/traversal/traversal-engine.test.ts` — BFS/DFS/Custom against fake nodes; prove correctness before any agent exists (plan step 2)
-- `application/agents/guardrail.agent.test.ts` — regression tests on the highest-risk layer
+- `shared/words.test.ts`, `domain/schemas/*.test.ts`, `domain/traversal/layer-position.test.ts`, `config/env.test.ts`, `interfaces/http/app.test.ts` (Phase 2)
+- `infrastructure/llm/concurrency.test.ts`, `application/llm/structured.test.ts` (Phase 3)
+- `application/agents/*.test.ts` — parser mapping, verifier fixtures, guardrail regression (Phases 4, 5, 9)
+- `application/use-cases/expand-node.use-case.test.ts`, `application/tree/fan-in.test.ts` — duplicate delivery, out-of-order completion, crash-after-generation reuse, DLQ cascade, dedup, parallelism proof (Phase 6)
+- `application/use-cases/{get-tree,handle-dead-letter,start-tree-build,halt-run}.use-case.test.ts`, `application/tree/{construct-node,expansion-cache}.test.ts`, `infrastructure/memory/*.test.ts`, `interfaces/workers/{local-queue-worker,construction-loop}.test.ts` (Phase 6)
+- `infrastructure/llm/{rate-limit,openai-compatible.adapter}.test.ts` — errors built through the REAL SDK constructor, because every hand-built plain object missed the `Headers` bug (Phase 6.1, C56)
+- `domain/traversal/estimate-expand-calls.test.ts` (Phase 6.1); `infrastructure/llm/failover.adapter.test.ts`, `composition/llm.test.ts`, `shared/redact.test.ts` (Phase 6.2)
+- `interfaces/http/{trees.routes,trees.routes.flow,validate.middleware}.test.ts`, `composition/container.test.ts`, `infrastructure/memory/memory-run.repository.test.ts` (Phase 7). `trees.routes.test.ts` fakes the use-cases to prove every status mapping; `trees.routes.flow.test.ts` puts the REAL construction stack (`buildHarness`, fake expander) behind the real routes, so POST → poll GET → `constructed` is the offline twin of the phase's curl Verify - including the halted partial tree, the 429 guard and the `MAX_NODES_PER_RUN` cap
+- `application/use-cases/write-article.use-case.test.ts` — children withheld, top-down ordering, run completion (Phase 10)
+- `application/use-cases/get-quiz.use-case.test.ts` — cache hit makes no LLM call, question-count repair (Phase 11)
+- `infrastructure/aws/*.test.ts`, `infrastructure/dynamodb/*.test.ts` — request shapes and condition expressions with a stubbed client (Phase 13)

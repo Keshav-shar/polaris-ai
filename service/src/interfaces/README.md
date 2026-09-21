@@ -1,6 +1,6 @@
 # interfaces/
 
-**Purpose:** Inbound adapters: HTTP and Lambda worker entry points. Thin: parse and validate input, call one use-case, map the result or error.
+**Purpose:** Inbound adapters: HTTP routes and queue workers (local worker and Lambda handlers). Thin: parse and validate input, call one use-case, map the result or error.
 
 **May depend on:** application/use-cases, domain/schemas, domain/errors, shared, and `composition` (entry points only).
 

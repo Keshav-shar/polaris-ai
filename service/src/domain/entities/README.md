@@ -1,18 +1,17 @@
 # entities/
 
-**Purpose:** Domain types for the three storage tiers and the teaching model. Types plus small invariant-enforcing helpers only.
+**Purpose:** Domain types for runs, tree nodes, evidence and articles. Types plus small invariant-enforcing helpers only.
 
 **May depend on:** domain/schemas, domain/errors.
 
-**Must not depend on:** Any persistence or transport concern (no SQL rows, no DynamoDB attribute maps).
+**Must not depend on:** Any persistence or transport concern (no SQL rows).
 
 **Planned contents:**
-- `teaching-agent.ts` — id, name, personalityMd, traversalPlan, maxTreeHeight, extraControllers, isActive
-- `tree-node.ts` — Tier A working node: parent, depth, breadthIndex, status (pending | expanding | guardrail_pass | guardrail_fail | committed), retryCount
-- `tree-run.ts` — run id, config, status
-- `topic.ts` — Tier B committed topic, ltree path, depth
+- `tree-run.ts` — id, topic, maxDepth, status (`constructing` | `constructed` | `done` | `failed` | `halted`), haltReason, stats — mirror `domain/schemas/run.schema.ts` (C55)
+- `tree-node.ts` — id, parentId, depth, topic, brief, status (`pending` | `expanded` | `done` | `failed`), attempts — the API adds a derived `blocked` (C54)
+- `node-path.ts` — ltree path value object built from node ids
 - `evidence.ts`, `article.ts`, `quiz.ts`
-- `user-topic-progress.ts` — Tier C: timeSpentSeconds, quizScore, agentIdUsed, configId, completedAt
 
 **Design notes:**
-- Issue 2: model the ltree `path` as a value object that validates label characters and length, so an invalid path cannot be constructed.
+- ltree labels allow only `[A-Za-z0-9_-]`, max 1000 chars: `node-path.ts` builds labels from ids so an invalid path cannot be constructed.
+- Teaching/traversal agents and per-user progress are deferred (`docs/conflicts.md` C30).

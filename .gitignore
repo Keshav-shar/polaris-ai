@@ -1,14 +1,14 @@
 # Claude Code
-ClaudeCodeContent/
+.claude/
 CLAUDE.md
-
+docs/
 # Dependencies
 node_modules/
 
 # Environment and secrets
 .env
 .env.*
-!.env.example
+.env.example
 
 # Build output
 dist/
@@ -17,6 +17,7 @@ build/
 out/
 cdk.out/
 *.tsbuildinfo
+next-env.d.ts
 
 # Test and coverage
 coverage/

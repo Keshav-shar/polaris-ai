@@ -1,6 +1,6 @@
 # application/
 
-**Purpose:** Orchestration: agents, the LangGraph state graph and use-cases. Reaches the outside world only through ports.
+**Purpose:** Orchestration: agents, fan-in, LangGraph wiring and use-cases (the two passes run as message-driven use-cases). Reaches the outside world only through ports.
 
 **May depend on:** domain, application/ports, config/constants, shared.
 

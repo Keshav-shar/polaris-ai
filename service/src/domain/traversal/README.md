@@ -1,17 +1,18 @@
 # traversal/
 
-**Purpose:** The traversal engine (plan section 2). The only thing that varies between BFS, DFS and Custom is a TraversalPlan, so the engine is closed for modification and open for extension.
+**Purpose:** Pure rules for the fixed-height, queue-driven BFS construction: where a node sits relative to the bottom of the tree.
 
-**May depend on:** domain/entities, domain/errors.
+**May depend on:** `config/constants`, domain/schemas, domain/errors.
 
-**Must not depend on:** Agents, LLMs, databases, the graph. The engine must run against fake nodes with zero I/O.
+**Must not depend on:** Agents, LLMs, databases, the graph. Everything here runs with zero I/O.
 
 **Planned contents:**
-- `traversal-phase.ts` — `TraversalPhase` type, pure data, no logic
-- `traversal-plan.ts` — `BFS_PLAN`, `DFS_PLAN`, `makeCustomPlan(introDepth, maxHeight)`
-- `traversal-engine.ts` — priority-queue executor; reads any plan; never edited to add a plan
-- `priority-queue.ts` — generic PQ wrapper (tinyqueue)
+- `layer-position.ts` — `layerPosition(depth, maxDepth)` → `normal` | `taper` | `leaf` (Phase 2)
+- `estimate-expand-calls.ts` — `estimateExpandCalls(maxDepth, branching?)`: expand calls a tree would cost, for the pre-build free-tier warning. Warning only, never a cap (Phase 6.1, C57)
+- `ancestor-window.ts` — `nextAncestors(ancestors, parent)` keeping the last `ANCESTOR_WINDOW` levels (written in Phase 5)
+- `node-id.ts` — `normalizeTopic`, `pathLabel` (`n_` + hex id, ltree-safe), `childPath` (written in Phase 5)
+- `clean-children.ts` — `cleanChildren(children, blocked)`: trim, dedupe, cycle guard (written in Phase 5)
 
 **Design notes:**
-- `priority(node) = (1 - ratio) * breadthScore + ratio * depthScore`. `maxTreeHeight` is a hard ceiling checked BEFORE priority is computed; it caps depth only, never breadth.
-- Extension rule: a new controller is one more optional key on `TraversalPhase` plus one more read inside `priority()`. Plan definitions and the executor loop stay untouched.
+- Construction is always BFS in causal order (a child is enqueued after its parent finishes; no level barrier, `docs/traversal-algorithm.md`). The v2 priority-queue engine with BFS/DFS/Custom plans is superseded; see `docs/conflicts.md` C02 and C30 (deferred).
+- `TAPER_LAYERS = 2` counts the last two layers **including** the leaf: `depth === maxDepth - 1` → taper, `depth === maxDepth` → leaf (zero children). E.g. maxDepth 5 → 0-3 normal, 4 taper, 5 leaf.

@@ -1,15 +1,15 @@
 # aws/
 
-**Purpose:** AWS SDK adapters for observability and secrets.
+**Purpose:** AWS SDK v3 adapters for the build path.
 
-**May depend on:** application/ports, `@aws-sdk/client-cloudwatch`, `@aws-sdk/client-ssm`.
+**May depend on:** application/ports, domain, `@aws-sdk/client-sqs`.
 
-**Must not depend on:** DynamoDB/Postgres adapters.
+**Must not depend on:** Other adapters, use-cases.
 
 **Planned contents:**
-- `aws-clients.ts` — CloudWatch + SSM client init (moved here from the plan's `config/`, since it is I/O)
-- `cloudwatch-metrics.adapter.ts` — guardrail pass/fail rate, retry counts
-- `ssm-secrets.adapter.ts` — cached reads of Standard parameters
+- `sqs-node-queue.adapter.ts` — implements `node-queue.port.ts` with `SendMessage` / `SendMessageBatch` (≤ 10 per call; retries failed batch entries) (Phase 13)
 
 **Design notes:**
-- CloudWatch always-free covers 10 custom metrics, and each distinct dimension combination counts as a separate metric. Keep dimensions minimal.
+- Queue URLs and region come in as constructor arguments. Credentials: the Lambda role inside AWS, the IAM user `polaris-kickoff` in Express.
+- No Secrets Manager, no SSM: secrets are plain env vars (`docs/aws-retrofit.md`).
+- CloudWatch alarms and SNS are configured by the user in the console; no code here.

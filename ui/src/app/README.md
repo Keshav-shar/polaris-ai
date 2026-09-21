@@ -7,4 +7,6 @@
 **Must not depend on:** Direct database access.
 
 **Planned contents:**
-See the sub-folders; this folder holds no files of its own.
+- `layout.tsx`, `page.tsx` — Phase 2: title + API status line; Phase 8: prompt input, polling tree view
+- `globals.css` — minimal, light/dark, visible focus (Phase 8)
+- See the sub-folders for later routes.

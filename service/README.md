@@ -1,7 +1,7 @@
 # service/
 
-Polaris backend: TypeScript, deployed to AWS Lambda (Always Free tier) with Supabase Postgres and DynamoDB for storage.
-Source of truth for the design: `polaris-implementation-plan.md` (v2).
+Polaris backend: TypeScript, Express 5, Zod 4, vitest. Supabase Postgres is the permanent store (from Phase 12). The tree-build path runs on SQS + Lambda + DynamoDB (Phase 13; in-memory queues locally before that). Express is hosted on Vercel, not AWS.
+Source of truth: `.claude/CLAUDE.md` and the docs it links, `docs/polaris-aws-retrofit.md` + `docs/aws-retrofit.md` for the build path; build order in `docs/POLARIS_BUILD_PLAN.md`.
 
 ## Layers and the dependency rule
 
@@ -9,54 +9,54 @@ Dependencies point **inward only**. An inner layer never imports an outer one.
 
 ```
             interfaces ─────┐
-  (http routes, lambdas)    │
+  (http routes, workers)    │
                             ▼
             application ──► domain
-  (agents, graph, use-cases)  (entities, traversal, schemas)
+  (agents, fan-in, graph,     (entities, traversal rules,
+   use-cases)                  credibility, schemas)
                             ▲
             infrastructure ─┘  implements application/ports
-  (postgres, dynamodb, llm, search, aws)
+  (memory, postgres, dynamodb, aws/sqs, llm, search)
 
             composition  ── the only place that news adapters and binds them to ports
 ```
 
 | Layer | Contains | May import | Must not import |
 |---|---|---|---|
-| `domain` | entities, traversal engine, Zod schemas, errors | itself, `config/constants`, pure libs | everything else; I/O; `process.env`; clocks/randomness (inject) |
-| `application` | ports, agents, LangGraph wiring, use-cases | `domain`, `config/constants`, `shared` | `infrastructure`, `interfaces`, SDKs |
+| `domain` | entities, credibility rules, layer-position rules, Zod schemas, errors | itself, `config/constants`, `shared/words.ts`, pure libs | everything else; I/O; `process.env`; clocks/randomness (inject) |
+| `application` | ports, agents, fan-in, LangGraph wiring, use-cases | `domain`, `config/constants`, `shared` | `infrastructure`, `interfaces`, SDKs |
 | `infrastructure` | adapters implementing ports | `application/ports`, `domain`, SDKs | `interfaces`, use-cases, agents |
-| `interfaces` | HTTP routes/middleware, Lambda handlers | use-cases, `domain/schemas`, `composition` (entry points) | `infrastructure` directly |
+| `interfaces` | HTTP routes/middleware, queue workers (local worker, Lambda handlers) | use-cases, `domain/schemas`, `composition` (entry points) | `infrastructure` directly |
 | `composition` | DI root | everything | (nobody imports it except entry points) |
 
-Why: the traversal engine (plan section 2) must stay closed for modification and testable with fake nodes and zero LLM or AWS calls. The layering also lets Tier A start in memory and move to DynamoDB later (plan section 8, steps 4 and 7) by changing only `composition/`.
+Why: the construction and article passes must be testable with fake agents and zero LLM, database or AWS calls. The layering also lets queues, state and repositories start in memory and move to SQS / DynamoDB / Postgres by changing only `composition/`.
 
-## Storage tiers to adapters
+## Storage to adapters
 
-| Tier | Data | Adapter |
+| Data | Phases 2-11 (local) | Production |
 |---|---|---|
-| A. Ephemeral tree (TTL 48h) | working topic nodes during a run | `infrastructure/dynamodb` |
-| B. Presented content (forever) | topics, evidence, articles, quizzes, teaching agents | `infrastructure/postgres` |
-| C. Per-user progress (forever) | time spent, quiz score, agent used | `infrastructure/dynamodb` |
+| Runs, tree nodes, evidence, articles, quizzes (permanent) | `infrastructure/memory` | `infrastructure/postgres` (Phase 12) |
+| In-flight node state, fan-in counters, dedup keys (TTL 7 days) | `infrastructure/memory` | `infrastructure/dynamodb` (Phase 13) |
+| Messages (construct / article queues + DLQs) | `infrastructure/memory` + local worker | `infrastructure/aws` (SQS, Phase 13) |
 
 ## Conventions
 
-- **Files:** kebab-case with a role suffix: `*.agent.ts`, `*.port.ts`, `*.repository.ts`, `*.use-case.ts`, `*.routes.ts`, `*.middleware.ts`, `*.lambda.ts`, `*.adapter.ts`, `*.error.ts`.
+- **Files:** kebab-case with a role suffix: `*.agent.ts`, `*.prompt.ts`, `*.port.ts`, `*.repository.ts`, `*.store.ts`, `*.use-case.ts`, `*.routes.ts`, `*.middleware.ts`, `*.lambda.ts`, `*.adapter.ts`, `*.error.ts`, `*.schema.ts`.
 - **Validation at boundaries:** everything from an LLM, request or DB JSON column is parsed with a Zod schema from `domain/schemas`; types are inferred from the schema.
 - **Dependency injection:** by constructor/function parameter. No module-level singletons except in `composition/`.
 - **Errors:** expected failures are typed domain errors or `Result`; HTTP mapping happens only in `interfaces/http/middleware`.
-- **Idempotency:** Lambda and SQS deliver at-least-once; every worker step must be safe to repeat.
-- **Tests:** `tests/unit` (no network) > `tests/integration` (local DBs) > `tests/e2e` (Supertest). Guardrail and traversal engine carry the strictest coverage.
+- **Idempotency:** SQS delivers at-least-once; every message handler must be safe to repeat (conditional writes, stored results reused, deterministic child ids — `docs/aws-retrofit.md`).
+- **Tests:** `tests/unit` (no network) > `tests/integration` (local DBs) > `tests/e2e` (not used by the node-builder MVP). Runner: vitest. The verifier, guardrail, fan-in and message idempotency carry the strictest coverage. Tests never call AWS.
 - **Each folder has a README** stating its purpose, allowed and forbidden dependencies, and planned contents. Update it when the folder's role changes.
 
-## Open design issues in the plan (resolve while authoring the folders they affect)
+## Known plan defects — do not reproduce them
 
-1. `topic_configs` references `teaching_agents` before it exists; reorder the DDL. (`db/migrations`)
-2. ltree labels allow only `[A-Za-z0-9_-]` up to 1000 chars; build paths from ids/slugs, not titles. (`db/migrations`, `domain/entities`)
-3. `config_hash` ignores the traversal plan and personality, so edited agents reuse stale content; add an agent version. (`db/migrations`)
-4. No durable run record for `GET /trees/:id` once Tier A's TTL expires. (`db/migrations`, `application/use-cases`)
-5. No user/role model behind the "superadmin" RLS rule. (`db/migrations`, `interfaces/http/middleware`)
-6. `vector(1536)` couples the schema to one embedding model. (`config`, `infrastructure/llm`)
-7. Lambda container images need ECR, which is not Always Free; use zip bundles. (`infra/stacks`, `interfaces/workers`)
-8. Step Functions' 4,000 free transitions/month will not cover one transition per node visit; verify and consider an SQS-driven loop. (`infra/stacks`)
-9. AWS accounts created after 2025-07-15 use a credit-based Free Plan; confirm each service before deploy. (`infra`)
-10. Supabase free tier: 500 MB, no backups, pauses after 7 days idle. (`infrastructure/postgres`)
+1. ltree labels allow only `[A-Za-z0-9_-]` up to 1000 chars; build paths from ids, not titles. (`db/migrations`, `domain/entities`)
+2. Keep a durable `runs` record; do not rely on an expiring store for run status. (`db/migrations`, `application/use-cases`)
+3. Create FK targets before the tables that reference them (`runs` before `nodes`). (`db/migrations`)
+4. The embedding dimension is defined once (`EMBEDDING_DIMENSION`); never hard-code `vector(1536)`. (`config`, `infrastructure/llm`)
+5. Supabase free tier: 500 MB, no backups, pauses after 7 days idle. (`infrastructure/postgres`)
+6. AWS: zip bundles, not container images (ECR is not Always Free); accounts created after 2025-07-15 use a credit-based Free Plan, so confirm each service. (`interfaces/workers`, `scripts`)
+7. The design doc's IAM role omits `sqs:GetQueueAttributes`, `sqs:ChangeMessageVisibility` and CloudWatch Logs; its visibility timeout (2-3×) is below AWS guidance (6×); on-demand DynamoDB is not free. Use the amended values in `docs/aws-retrofit.md`. (`infrastructure/aws`, `infrastructure/dynamodb`, `docs/setup.md`)
+
+Items that applied only to the superseded v2 design (teaching-agent FK order, `config_hash`, superadmin RLS, Step Functions transitions) are recorded in `docs/conflicts.md`.

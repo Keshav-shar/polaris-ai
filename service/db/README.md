@@ -1,8 +1,8 @@
 # db/
 
-**Purpose:** SQL that defines and seeds Postgres/Supabase (Tier B content + teaching-agent config). Plain SQL, not TypeScript source.
+**Purpose:** SQL that defines Postgres/Supabase: runs, nodes, evidence, articles. Plain SQL, not TypeScript source.
 
-**May depend on:** Nothing. Executed by migration tooling only.
+**May depend on:** Nothing. Executed by migration tooling (Supabase CLI) only.
 
 **Must not depend on:** Application code. TypeScript never imports from here.
 

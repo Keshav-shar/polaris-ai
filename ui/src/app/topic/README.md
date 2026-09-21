@@ -1,6 +1,6 @@
 # topic/
 
-**Purpose:** Route segment for topic views.
+**Purpose:** Route segment for per-node article views.
 
 **May depend on:** ui/src/components, ui/src/lib.
 

@@ -7,5 +7,7 @@
 **Must not depend on:** Route files.
 
 **Planned contents:**
-- `AgentPicker.tsx` — lists GET /agents; user picks one but cannot edit agent values
-- `QuizWidget.tsx` — renders the quiz, submits the score
+- `api-status.tsx` — client component: calls `GET /health`, shows connected / unreachable and whether an LLM key is set (Phase 2)
+- `tree-view.tsx` — recursive `<details>/<summary>`: topic, depth, brief (Phase 8)
+- `article-view.tsx` — markdown article + citations + credibility badge (Phase 10)
+- `quiz-widget.tsx` — renders a node's quiz, scores it client-side against `PASSING_SCORE_PERCENT`; nothing persisted (Phase 11)

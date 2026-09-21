@@ -1,16 +1,16 @@
 # dynamodb/
 
-**Purpose:** DynamoDB adapters for Tier A (ephemeral tree nodes, TTL) and Tier C (per-user progress, no TTL).
+**Purpose:** DynamoDB adapters for in-flight build state in the `PolarisNodes` table (node items, run counters, dedup keys).
 
 **May depend on:** application/ports, domain, `@aws-sdk/client-dynamodb`, `@aws-sdk/lib-dynamodb`.
 
-**Must not depend on:** Postgres, use-cases.
+**Must not depend on:** Postgres adapters, use-cases.
 
 **Planned contents:**
-- `dynamo.client.ts` — client init
-- `tree-node.store.ts` — Tier A; sets `ttl = now + 48h` on every write
-- `in-memory-tree-node.store.ts` — same port, used in early build steps and unit tests
-- `progress.repository.ts` — Tier C, PK `user_id`, SK `topic_id`
+- `dynamo-node-state.store.ts` — implements `node-state.port.ts` with conditional `PutItem` / `UpdateItem` (claim, save result + expectedChildren, finish, `ADD completedChildIds` with `NOT contains`) (Phase 13)
+- `dynamo-run-state.store.ts`, `dynamo-dedup.store.ts` (Phase 13)
 
 **Design notes:**
-- Writes from Lambda retries/SQS redelivery are at-least-once: use conditional writes so a repeated node visit is idempotent.
+- Every write is conditional; see the idempotency rules in `docs/aws-retrofit.md`. Every item gets `expiresAt` (TTL, `NODE_STATE_TTL_DAYS`).
+- Table is provisioned 5 RCU / 5 WCU; the SDK retries throttling.
+- Never read by the UI; Postgres is the permanent store.
