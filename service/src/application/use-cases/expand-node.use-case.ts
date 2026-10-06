@@ -8,13 +8,16 @@ import type { RunStatePort } from "../ports/run-state.port";
 import type { TreeRepositoryPort } from "../ports/tree-repository.port";
 import type { NodeConstructor } from "../tree/construct-node";
 import type { FanIn } from "../tree/fan-in";
-import { childConstructMessage } from "../tree/messages";
+import { childConstructMessage, toArticleMessage } from "../tree/messages";
 
 export type ExpandNodeDeps = {
   nodeState: NodeStatePort;
   dedup: DedupPort;
   treeRepo: TreeRepositoryPort;
   queue: NodeQueuePort;
+  // The article queue. An expanded node IS the article pass's trigger, so this node's scroll is written
+  // while its children are still being expanded - one downward traversal instead of three (C91).
+  articleQueue: NodeQueuePort;
   runState: RunStatePort;
   fanIn: FanIn;
   constructor: NodeConstructor;
@@ -35,6 +38,7 @@ export function createExpandNode({
   dedup,
   treeRepo,
   queue,
+  articleQueue,
   runState,
   fanIn,
   constructor,
@@ -91,6 +95,8 @@ export function createExpandNode({
       await treeRepo.upsertNode(message, result.brief);
 
       if (result.children.length === 0) {
+        // A leaf: nothing below it to wait for, so its scroll can be written at once.
+        await articleQueue.send(toArticleMessage(message));
         await fanIn.completeConstruction(nodeId, "done");
         return;
       }
@@ -101,8 +107,14 @@ export function createExpandNode({
       // Rule 4 before the send: a child that completes fast must find its own state already there.
       await nodeState.createPending(childMessages);
       // The frontier is known now, so show it: these rows render as `pending` (or `blocked` on a halted
-      // run) even if their messages are never handled.
+      // run) even if their messages are never handled. They are also what the writer reads to signpost
+      // this node's subtopics, which is why they are upserted BEFORE the article message goes out.
       await treeRepo.upsertPending(childMessages);
+      // The hand-off to the second pass, one node at a time: this node's brief is durable and its child
+      // topics are on their rows, so everything the writer needs exists. The article is then written in
+      // parallel with the children's expansion, so by the time the leaf layer is being built the layer
+      // above it already has its scroll (C91). A redelivery re-sends it; claimArticle absorbs that.
+      await articleQueue.send(toArticleMessage(message));
       await queue.sendBatch(childMessages);
     },
   };

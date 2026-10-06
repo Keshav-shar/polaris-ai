@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { EnvError } from "../../../../src/config/env";
 import { QuotaExhaustedError } from "../../../../src/domain/errors/quota-exhausted.error";
+import { TransportUnavailableError } from "../../../../src/domain/errors/transport-unavailable.error";
 import { RunInProgressError } from "../../../../src/domain/errors/run-in-progress.error";
 import { RunNotFoundError } from "../../../../src/domain/errors/run-not-found.error";
 import { StructuredOutputError } from "../../../../src/domain/errors/structured-output.error";
@@ -78,7 +79,7 @@ describe("error handler", () => {
   it("maps an exhausted quota to 429 and honours the provider's own wait", () => {
     const { logger } = fakeLogger();
     const { res, response } = fakeResponse();
-    createErrorHandler(logger)(new QuotaExhaustedError("gemini-3.6-flash", 45_000), req, response, next);
+    createErrorHandler(logger)(new QuotaExhaustedError("openai/gpt-oss-120b", 45_000), req, response, next);
     expect(res.statusCode).toBe(429);
     expect(res.body).toMatchObject({ error: { code: "quota_exhausted" } });
     expect(res.headers["Retry-After"]).toBe("45");
@@ -87,9 +88,29 @@ describe("error handler", () => {
   it("falls back to a long wait when the provider states none", () => {
     const { logger } = fakeLogger();
     const { res, response } = fakeResponse();
-    createErrorHandler(logger)(new QuotaExhaustedError("gemini-3.6-flash"), req, response, next);
+    createErrorHandler(logger)(new QuotaExhaustedError("openai/gpt-oss-120b"), req, response, next);
     // A daily quota is hours away; telling a client to retry in a second would just burn requests.
     expect(Number(res.headers["Retry-After"])).toBeGreaterThan(60);
+  });
+
+  it("maps an unreachable provider to 503 with a SHORT wait, not 500", () => {
+    // Nothing is wrong with the request and nothing is wrong with this service: the network is down, and
+    // it usually comes back in seconds - unlike a daily quota, which is hours away (C94).
+    const { logger, error: logError } = fakeLogger();
+    const { res, response } = fakeResponse();
+    createErrorHandler(logger)(
+      new TransportUnavailableError("openai/gpt-oss-120b", "Connection error. (ECONNRESET)"),
+      req,
+      response,
+      next,
+    );
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toMatchObject({ error: { code: "transport_unavailable" } });
+    // The provider string stays in the log: a provider that echoes the request could echo its key.
+    expect(JSON.stringify(res.body)).not.toContain("ECONNRESET");
+    expect(Number(res.headers["Retry-After"])).toBeLessThanOrEqual(60);
+    // Worth an error log: a run failing this way is an operational fact, not a caller mistake.
+    expect(logError).toHaveBeenCalled();
   });
 
   it("maps unusable model output to 502 without leaking the raw output", () => {

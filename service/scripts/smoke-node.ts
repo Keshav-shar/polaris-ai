@@ -6,8 +6,10 @@ import { estimateExpandCalls } from "../src/domain/traversal/estimate-expand-cal
 import { createLogger } from "../src/shared/logger";
 import { failureDetail } from "./redact";
 
-// Real end-to-end construction on the local queue. Cost is roughly `branching ^ maxDepth` LLM calls, so
-// the default is 1 (~6 calls, inside Gemini's 20/day). Pass a larger depth only when the quota allows -
+// Real end-to-end BUILD on the local queue - both passes, because since C91 they run at the same time:
+// each expanded node hands itself straight to the article queue. Cost is roughly `branching ^ maxDepth`
+// expand calls plus one search and one writer call per node, so
+// the default is 1 (~6 nodes). Pass a larger depth only when the quota allows -
 // the pipeline itself is depth-agnostic and is proven at depth by the unit tests. A run that outlives its
 // quota is NOT an error here: it prints the tree it managed to build, with `[blocked]` on the rest.
 function render(node: TreeNode, indent = ""): string {
@@ -43,7 +45,7 @@ async function main(): Promise<void> {
 
   const env = getEnv();
   if (!isLlmConfigured(env)) {
-    console.error(`LLM not configured (LLM_PROVIDER=${env.LLM_PROVIDER}): smoke test not run.`);
+    console.error("LLM not configured (set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL): smoke test not run.");
     process.exit(1);
   }
   const logger = createLogger({ level: env.LOG_LEVEL });
@@ -58,19 +60,31 @@ async function main(): Promise<void> {
   const { runId } = await stack.startTreeBuild.execute(prompt, { maxDepth });
   const started = Date.now();
   stack.worker.start();
-  await stack.worker.idle();
+  // Started together, not one after the other: article messages arrive while the tree is still growing.
+  stack.articleWorker.start();
+  // Awaiting one then the other is not enough - construction can enqueue an article after the article
+  // worker has already gone idle. Both idle at the same instant IS the fixpoint: only a running handler
+  // can enqueue anything, and there is none.
+  for (;;) {
+    await stack.worker.idle();
+    await stack.articleWorker.idle();
+    if (stack.worker.isIdle() && stack.articleWorker.isIdle()) break;
+  }
   await stack.worker.stop();
+  await stack.articleWorker.stop();
 
   const { run, tree, stats } = await stack.getTree.execute(runId);
   const estimate = estimateExpandCalls(maxDepth);
   const configured = requireLlmEnv(env);
   const answered = stack.activeModel();
-  // After a failover the configured model is not the one that answered; name the one that actually did.
-  const providerLine =
+  // The configured lead is not always the one that answered - a rotation inside the model pool changes
+  // it - so name the model that actually did.
+  const pool = configured.models.length > 1 ? ` pool=${configured.models.length} (${configured.rotation})` : "";
+  const modelLine =
     answered === configured.model
-      ? `provider=${configured.provider} model=${configured.model}`
-      : `provider=${configured.provider} model=${configured.model} -> failed over to ${answered}`;
-  console.log(`\n${providerLine}`);
+      ? `model=${configured.model}${pool}`
+      : `lead=${configured.model}${pool} -> answered by ${answered}`;
+  console.log(`\n${modelLine}`);
 
   if (tree === null) {
     console.log(`run ${runId} → ${run.status} (maxDepth ${maxDepth}, ${Date.now() - started} ms)`);
@@ -79,7 +93,7 @@ async function main(): Promise<void> {
     const { known, expanded } = countNodes(tree);
     const progress =
       expanded === known
-        ? `${known} nodes`
+        ? `${known} nodes, ${stats.articlesDone} scrolls`
         : `INCOMPLETE: ${expanded} of ${known} known nodes expanded; est. ~${estimate} for a full tree`;
     console.log(`run ${runId} → ${run.status} (maxDepth ${maxDepth}, ${progress}, ${Date.now() - started} ms)`);
     if (run.haltReason !== undefined) console.log(`reason: ${run.haltReason}`);
@@ -98,7 +112,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  // Never let a provider error echo a key back - either profile's, since failover may have used both.
+  // Never let a provider error echo the key back.
   console.error(failureDetail(getEnv(), error));
   process.exit(1);
 });

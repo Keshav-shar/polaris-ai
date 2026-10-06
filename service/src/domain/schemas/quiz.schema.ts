@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HttpUrl } from "./url.schema";
 import { QUIZ_CONFIG } from "../../config/constants";
 
 const OPTIONS_PER_QUESTION = 4;
@@ -8,7 +9,7 @@ export const QuizQuestion = z.object({
   options: z.array(z.string().trim().min(1)).length(OPTIONS_PER_QUESTION),
   answerIndex: z.number().int().min(0).max(OPTIONS_PER_QUESTION - 1),
   explanation: z.string().trim().min(1),
-  evidenceUrl: z.url(), // every question cites the node's evidence
+  evidenceUrl: HttpUrl, // every question cites the node's evidence, and it is rendered as an href
 });
 export type QuizQuestion = z.infer<typeof QuizQuestion>;
 

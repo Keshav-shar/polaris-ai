@@ -8,27 +8,86 @@ import { NodeMessage } from "../../domain/schemas/queue-message.schema";
 
 export type MemoryNodeQueue = NodeQueuePort & NodeQueueConsumerPort;
 
-type Envelope = { receiptId: string; receiveCount: number; message: NodeMessage };
+type Envelope = {
+  receiptId: string;
+  receiveCount: number;
+  // Releases that deliberately did NOT count, i.e. stalls. Carried on the envelope rather than in the
+  // consumer, so the consumer stays stateless across deliveries exactly as it is on SQS, where the
+  // equivalent number arrives on the message.
+  stallCount: number;
+  // Epoch ms before which this message is hidden. 0 = visible now.
+  visibleAt: number;
+  message: NodeMessage;
+};
 
-// The in-process stand-in for an SQS standard queue. It mirrors every condition the real queue enforces
-// (receive counting up to QUEUE.MAX_RECEIVES, batch sends chunked at SEND_BATCH_MAX) with ONE deliberate
-// exception: there is no visibility timeout. In-process there is no crashed consumer - the worker always
-// deletes or releases in a `finally` - and a timer would make every test nondeterministic for no local
-// benefit. Phase 13's SQS adapter gets the timeout from the service. (docs/conflicts.md C51.)
-export function createMemoryNodeQueue(): MemoryNodeQueue {
+// Injected, never ambient: the delay below is the one piece of time this adapter has, and a test that
+// cannot control it is a test that sleeps.
+export type MemoryQueueDeps = {
+  now?: () => number;
+  // setTimeout's shape, returning a cancel. The default is the real timer; `tests/fixtures/fake-clock.ts`
+  // supplies a deterministic one.
+  schedule?: (ms: number, run: () => void) => () => void;
+};
+
+const defaultSchedule = (ms: number, run: () => void): (() => void) => {
+  const handle = setTimeout(run, ms);
+  // Deliberately NOT unref'd. A delayed message is a node still owed an attempt, and a parked consumer
+  // has nothing else keeping the loop alive: with the timer unref'd, `npm run smoke:node` exited
+  // silently at the first stall and reported nothing. The timer is armed only while a consumer is
+  // waiting and cleared as soon as one is woken, so it never outlives real work by more than the delay.
+  return () => clearTimeout(handle);
+};
+
+// The in-process stand-in for an SQS standard queue. It mirrors the conditions the real queue enforces:
+// receive counting up to QUEUE.MAX_RECEIVES, batch sends chunked at SEND_BATCH_MAX, and - since C94 - a
+// per-message delay on release, which is SQS's ChangeMessageVisibility. C51 originally left the delay out
+// ("a timer would make every test nondeterministic"); the reason it can come back is that both the clock
+// and the timer are injected, so determinism is the caller's to keep. There is still no visibility
+// timeout on a NORMAL receive: in-process there is no crashed consumer, because the worker always
+// deletes or releases in a `finally`.
+export function createMemoryNodeQueue({
+  now = Date.now,
+  schedule = defaultSchedule,
+}: MemoryQueueDeps = {}): MemoryNodeQueue {
   const visible: Envelope[] = [];
   const inFlight = new Map<string, Envelope>();
   const waiters: (() => void)[] = [];
   let nextReceiptId = 0;
+  let cancelWake: (() => void) | undefined;
+
+  const isDue = (envelope: Envelope): boolean => envelope.visibleAt <= now();
 
   const wake = (): void => {
     while (waiters.length > 0) waiters.shift()?.();
+    // Nobody left to wake: drop the timer rather than let it hold the process open.
+    cancelWake?.();
+    cancelWake = undefined;
+  };
+
+  // Re-arms a single timer on the earliest hidden message, so a parked `waitForMessage()` is released
+  // when that message comes due rather than sitting until something else is enqueued.
+  const armWake = (): void => {
+    cancelWake?.();
+    cancelWake = undefined;
+    if (waiters.length === 0) return;
+    const waits = visible.filter((e) => !isDue(e)).map((e) => e.visibleAt - now());
+    if (waits.length === 0) return;
+    cancelWake = schedule(Math.max(0, Math.min(...waits)), () => {
+      cancelWake = undefined;
+      wake();
+    });
   };
 
   const enqueue = (message: NodeMessage): void => {
     // The queue is the trust boundary: parsing here is what makes the tree-wide invariants (ancestors <= 2,
     // a valid depth and path on every message) enforceable rather than merely intended.
-    visible.push({ receiptId: `r${nextReceiptId++}`, receiveCount: 0, message: NodeMessage.parse(message) });
+    visible.push({
+      receiptId: `r${nextReceiptId++}`,
+      receiveCount: 0,
+      stallCount: 0,
+      visibleAt: 0,
+      message: NodeMessage.parse(message),
+    });
   };
 
   return {
@@ -48,18 +107,30 @@ export function createMemoryNodeQueue(): MemoryNodeQueue {
     async receive(max) {
       const taken: QueueReceipt[] = [];
       while (taken.length < max) {
-        const envelope = visible.shift();
+        // The first DUE message, not simply the first: a delayed one stays where it is, so the order of
+        // everything behind it is untouched.
+        const at = visible.findIndex(isDue);
+        if (at === -1) break;
+        const [envelope] = visible.splice(at, 1);
         if (envelope === undefined) break;
         envelope.receiveCount += 1;
         inFlight.set(envelope.receiptId, envelope);
-        taken.push({ ...envelope, message: { ...envelope.message } });
+        taken.push({
+          receiptId: envelope.receiptId,
+          receiveCount: envelope.receiveCount,
+          stallCount: envelope.stallCount,
+          message: { ...envelope.message },
+        });
       }
       return taken;
     },
 
     waitForMessage() {
-      if (visible.length > 0) return Promise.resolve();
-      return new Promise<void>((resolve) => waiters.push(resolve));
+      if (visible.some(isDue)) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        waiters.push(resolve);
+        armWake();
+      });
     },
 
     async delete(receiptId) {
@@ -70,12 +141,18 @@ export function createMemoryNodeQueue(): MemoryNodeQueue {
       const envelope = inFlight.get(receiptId);
       if (envelope === undefined) return;
       inFlight.delete(receiptId);
-      // countReceive: false rewinds a stall (an exhausted daily quota), which must not push the message
-      // towards the dead-letter queue.
-      if (options?.countReceive === false) envelope.receiveCount -= 1;
+      // countReceive: false rewinds a stall (an exhausted daily quota, an unreachable provider), which
+      // must not push the message towards the dead-letter queue.
+      if (options?.countReceive === false) {
+        envelope.receiveCount -= 1;
+        envelope.stallCount += 1;
+      }
+      const delayMs = options?.delayMs ?? 0;
+      envelope.visibleAt = delayMs > 0 ? now() + delayMs : 0;
       // Tail, not head: a head push would hot-loop on a poison message and serialise everything behind it.
       visible.push(envelope);
-      wake();
+      if (delayMs > 0) armWake();
+      else wake();
     },
 
     size() {

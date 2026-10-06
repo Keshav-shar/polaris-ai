@@ -56,12 +56,24 @@ export type ExpandOutput = z.infer<typeof ExpandOutput>;
 export const TreeNodeStatus = z.enum(["pending", "expanded", "done", "failed", "blocked"]);
 export type TreeNodeStatus = z.infer<typeof TreeNodeStatus>;
 
+// Only the terminal halves of ArticleStatus reach the read model: a node either has its scroll or does
+// not. `in_progress` is in-flight state and belongs to the expiring store, not to the API.
+export const ArticleWriteStatus = z.enum(["done", "failed"]);
+export type ArticleWriteStatus = z.infer<typeof ArticleWriteStatus>;
+
 export const TreeNode = z.object({
   id: z.uuid(),
   topic: z.string(),
   depth: z.number().int().min(0),
   brief: z.string(), // "" until the node has been expanded
   status: TreeNodeStatus,
+  // The ARTICLE's state, which moves independently of `status`: a node is `done` the moment it is
+  // expanded, long before its scroll is written. Absent until the article pass reaches it, which is what
+  // lets the UI show scrolls appearing one by one (progressive display).
+  articleStatus: ArticleWriteStatus.optional(),
+  // Set only alongside `articleStatus: "failed"`, so the reader can say why a scroll is missing instead
+  // of showing the same "not yet written" it shows for one that is merely still queued.
+  articleFailureReason: z.string().optional(),
   get children() {
     return z.array(TreeNode);
   },

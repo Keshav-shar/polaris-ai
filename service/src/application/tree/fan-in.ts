@@ -1,3 +1,4 @@
+import type { RunState } from "../../domain/schemas/node-state.schema";
 import type { NodeStatePort, TerminalStatus } from "../ports/node-state.port";
 import type { RunRepositoryPort } from "../ports/run-repository.port";
 import type { RunStatePort } from "../ports/run-state.port";
@@ -12,12 +13,34 @@ export type FanInDeps = {
 
 export type FanIn = {
   completeConstruction(nodeId: string, outcome: TerminalStatus): Promise<void>;
+  // Counts one finished article and, when every article is in, moves the run to `done`. Resolves TRUE
+  // only when THIS call owned the terminal transition, so a caller with a side effect to run once per
+  // article can tell a real completion from a redelivery that `finishArticle` already absorbed.
+  completeArticle(runId: string, nodeId: string, outcome: TerminalStatus, reason?: string): Promise<boolean>;
 };
 
 // Completing a node records it against its parent; when the parent's children are all accounted for it
 // completes too, and the check repeats upward - several levels in one call. Iterative, never recursive:
 // the walk is bounded by maxDepth but a deep tree should not grow the stack.
+//
+// This module no longer hands the article pass its trigger: since C91 an expanded node enqueues its OWN
+// article (expand-node.use-case.ts), so the two passes overlap in time and the fan-in is pure accounting -
+// no LLM call and no re-work happens on this walk.
 export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDeps): FanIn {
+  // The run is done when construction has finished AND every constructed node's article is accounted for.
+  // BOTH halves matter now that the passes overlap: articles start landing while `nodesDone` is still
+  // climbing, so the count alone would declare a run finished after its first leaf.
+  const finishRunIfComplete = async (runId: string, counted: RunState): Promise<void> => {
+    const run = await runRepo.get(runId);
+    // `constructed` and nothing else: `constructing` means more nodes are coming, `done`/`failed`/`halted`
+    // are terminal and must not be rewritten.
+    if (run?.status !== "constructed") return;
+    // Only nodes whose CONSTRUCTION succeeded get an article ("failed construction nodes get no
+    // article", docs/aws-retrofit.md), and nodesDone counts exactly those - so that is the target.
+    const written = counted.articlesDone + counted.articlesFailed;
+    if (written >= counted.nodesDone) await runRepo.setStatus(runId, "done");
+  };
+
   return {
     async completeConstruction(nodeId, outcome) {
       let current = nodeId;
@@ -30,15 +53,17 @@ export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDep
         if (finished === undefined) return;
 
         await treeRepo.setStatus(finished.nodeId, status);
-        await runState.countNode(finished.runId, status);
+        const counted = await runState.countNode(finished.runId, status);
 
         if (finished.parentId === null) {
-          // The root is terminal, so the whole run is. A failed root means no tree was built: reporting
+          // The root is terminal, so construction is. A failed root means no tree was built: reporting
           // it as `constructed` would tell the UI to poll for a tree that will never arrive. The
           // pseudocode in docs/aws-retrofit.md only covers the success case (docs/conflicts.md C52).
-          // Phase 10 also sends the root article message here on success, which is why the article queue
-          // is not a dependency of this module yet.
           await runRepo.setStatus(finished.runId, status === "failed" ? "failed" : "constructed");
+          // The articles have been in flight all along, so they may already all be in: this is the only
+          // other moment the run can become `done`, and without it a fast tree would sit at `constructed`
+          // with every scroll written.
+          if (status !== "failed") await finishRunIfComplete(finished.runId, counted);
           return;
         }
 
@@ -55,6 +80,18 @@ export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDep
         current = parent.nodeId;
         status = "done";
       }
+    },
+
+    async completeArticle(runId, nodeId, outcome, reason) {
+      // Conditional, exactly like `finish`: undefined means this article was already counted, so a
+      // redelivery cannot inflate articlesDone or declare the run done early.
+      const finished = await nodeState.finishArticle(nodeId, outcome);
+      if (finished === undefined) return false;
+
+      // Recorded on the permanent row, so GET /api/trees can show which scrolls exist.
+      await treeRepo.setArticleStatus(nodeId, outcome, reason);
+      await finishRunIfComplete(runId, await runState.countArticle(runId, outcome));
+      return true;
     },
   };
 }

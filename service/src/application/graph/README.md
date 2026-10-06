@@ -10,4 +10,4 @@
 - `node-subgraph.ts` — optional LangGraph wrapper around one node's construction step (expand → verify) or article step (retrieve → guardrail → write)
 
 **Design notes:**
-- Not required: the use-cases call the agents directly. If added, it wraps the same functions, and the Lambda handlers do not change.
+- **Not yet adopted (C98):** `@langchain/langgraph` is not a dependency and the queue + use-cases do the orchestrating; the use-cases call the agents directly. If added, it wraps the same functions, and the Lambda handlers do not change.

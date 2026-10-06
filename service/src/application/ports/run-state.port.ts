@@ -14,4 +14,9 @@ export type RunStatePort = {
   // redelivery reuses the stored (already trimmed) set and never reserves twice.
   reserveNodes(runId: string, requested: number): Promise<number>;
   get(runId: string): Promise<RunState | undefined>;
+
+  // Atomic increment of articlesDone / articlesFailed, same DynamoDB ADD semantics as countNode, and it
+  // returns the new totals so the caller can decide whether the run is finished. The fields have existed
+  // on RunState since Phase 2 (amendment A3 / C38) with no way to move them - that was gap 4.
+  countArticle(runId: string, outcome: TerminalStatus): Promise<RunState>;
 };

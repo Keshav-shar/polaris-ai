@@ -1,4 +1,5 @@
 import type { ClaimRequest, NodeResult, NodeStatePort, TerminalStatus } from "../../application/ports/node-state.port";
+import type { WriterOutput } from "../../domain/schemas/article.schema";
 import type { NodeState } from "../../domain/schemas/node-state.schema";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 
@@ -10,7 +11,20 @@ import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 const TERMINAL: readonly string[] = ["done", "failed"];
 
 function copy(state: NodeState): NodeState {
-  return { ...state, completedChildIds: [...state.completedChildIds] };
+  return {
+    ...state,
+    completedChildIds: [...state.completedChildIds],
+    // The stored draft is write-once, so handing out the same array would let a caller edit history.
+    ...(state.article === undefined
+      ? {}
+      : {
+          article: {
+            ...state.article,
+            citations: [...state.article.citations],
+            ...(state.article.questions === undefined ? {} : { questions: [...state.article.questions] }),
+          },
+        }),
+  };
 }
 
 export function createMemoryNodeStateStore(): NodeStatePort {
@@ -83,6 +97,40 @@ export function createMemoryNodeStateStore(): NodeStatePort {
       parent.completedChildren += 1;
       if (childStatus === "failed") parent.failedChildren += 1;
       return copy(parent);
+    },
+
+    async claimArticle(nodeId) {
+      const state = items.get(nodeId);
+      // An article message for a node that was never constructed is a broken enqueue, not a race.
+      if (state === undefined) throw new Error(`claimArticle: node ${nodeId} does not exist`);
+      // Rule 1 on the article axis: a finished article is returned untouched, so the caller returns.
+      if (state.articleStatus !== undefined && TERMINAL.includes(state.articleStatus)) return copy(state);
+      state.articleStatus = "in_progress";
+      return copy(state);
+    },
+
+    async saveArticle(nodeId, article: WriterOutput) {
+      const state = items.get(nodeId);
+      if (state === undefined) throw new Error(`saveArticle: node ${nodeId} does not exist`);
+      // Rule 2: an existing draft is never overwritten - a retry reuses it, so two deliveries can never
+      // store different articles or different questions.
+      if (state.article !== undefined) return copy(state);
+      state.article = {
+        ...article,
+        citations: [...article.citations],
+        ...(article.questions === undefined ? {} : { questions: [...article.questions] }),
+      };
+      return copy(state);
+    },
+
+    async finishArticle(nodeId, status: TerminalStatus) {
+      const state = items.get(nodeId);
+      if (state === undefined) return undefined;
+      // Exactly-once, exactly as `finish` is for construction: the undefined is what stops a second
+      // delivery counting the same article again.
+      if (state.articleStatus !== undefined && TERMINAL.includes(state.articleStatus)) return undefined;
+      state.articleStatus = status;
+      return copy(state);
     },
   };
 }

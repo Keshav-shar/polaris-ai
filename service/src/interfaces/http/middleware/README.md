@@ -15,9 +15,11 @@
   | body over 10 kb | 413 | `payload_too_large` | — |
   | `ZodError` | 400 | `invalid_request` (+ `issues`) | — |
   | `RunNotFoundError` | 404 | `run_not_found` | — |
+  | `NodeNotFoundError` | 404 | `node_not_found` | — |
   | `RunInProgressError` | 429 | `run_in_progress` | `Retry-After` |
   | `QuotaExhaustedError` | 429 | `quota_exhausted` | `Retry-After` (provider's own wait when stated) |
   | `StructuredOutputError` | 502 | `structured_output_invalid` | — |
+  | `TransportUnavailableError` | 503 | `transport_unavailable` (fixed sentence; diagnosis only in logs, C95) | `Retry-After` |
   | `EnvError` | 503 | `llm_not_configured` | — |
   | anything else | 500 | `internal` (generic; details only in logs) | — |
 

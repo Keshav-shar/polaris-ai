@@ -43,6 +43,16 @@ export function createMemoryRunStateStore(maxNodesPerRun: number = MAX_NODES_PER
       return { ...state };
     },
 
+    async countArticle(runId, outcome: TerminalStatus) {
+      // Same ADD semantics as countNode: the item is created on first use and the NEW totals come back,
+      // so the caller can tell whether this was the article that finished the run.
+      const state = itemFor(runId);
+      if (outcome === "done") state.articlesDone += 1;
+      else state.articlesFailed += 1;
+      runs.set(runId, state);
+      return { ...state };
+    },
+
     async get(runId) {
       const state = runs.get(runId);
       return state === undefined ? undefined : { ...state };

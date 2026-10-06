@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Polaris — Guided Articles & Astral Arcana</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            astral: {
+              950: '#070913',
+              900: '#0B0F1E',
+              800: '#13192E',
+              700: '#1C2541',
+              600: '#2A365C',
+              500: '#3B4B7C',
+              gold: '#D4AF37',
+              goldGlow: '#FFD700',
+              amberTorch: '#F59E0B',
+              mythicBlue: '#38BDF8',
+              violetRune: '#A855F7',
+              starlight: '#E0F2FE'
+            }
+          },
+          fontFamily: {
+            serif: ['Cinzel', 'Georgia', 'serif'],
+            sans: ['Inter', 'sans-serif'],
+            code: ['"Fira Code"', 'monospace']
+          },
+          boxShadow: {
+            'gold-glow': '0 0 25px rgba(212, 175, 55, 0.25)',
+            'torch-glow': '0 0 30px rgba(245, 158, 11, 0.3)',
+            'starlight-glow': '0 0 20px rgba(56, 189, 248, 0.3)'
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- React 18, ReactDOM, & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Custom CSS for Stained Glass Borders, Star Trails & Scrollbars -->
+  <style>
+    body {
+      background-color: #070913;
+      color: #E0F2FE;
+      font-family: 'Inter', sans-serif;
+      overflow-x: hidden;
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0B0F1E;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #2A365C;
+      border-radius: 3px;
+      border: 1px solid rgba(212, 175, 55, 0.3);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #D4AF37;
+    }
+
+    /* Mythic Arch & Stained Glass Borders */
+    .arch-border {
+      border: 1px solid rgba(212, 175, 55, 0.3);
+      position: relative;
+    }
+    .arch-border::before {
+      content: '';
+      position: absolute;
+      top: -3px; left: -3px; right: -3px; bottom: -3px;
+      border: 1px solid rgba(56, 189, 248, 0.15);
+      pointer-events: none;
+      border-radius: inherit;
+    }
+
+    /* Celestial Ring Orbit Keyframes */
+    @keyframes orbitRotate {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .animate-orbit-slow {
+      animation: orbitRotate 120s linear infinite;
+    }
+    .animate-orbit-reverse {
+      animation: orbitRotate 90s linear infinite reverse;
+    }
+
+    /* Torch flicker animation */
+    @keyframes torchFlicker {
+      0%, 100% { opacity: 0.9; transform: scale(1); filter: drop-shadow(0 0 12px rgba(245,158,11,0.6)); }
+      50% { opacity: 0.75; transform: scale(0.98); filter: drop-shadow(0 0 8px rgba(245,158,11,0.4)); }
+      75% { opacity: 1; transform: scale(1.02); filter: drop-shadow(0 0 16px rgba(251,191,36,0.8)); }
+    }
+    .torch-glow {
+      animation: torchFlicker 3s ease-in-out infinite;
+    }
+
+    /* Glassmorphic Panel */
+    .mystic-panel {
+      background: rgba(11, 15, 30, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(212, 175, 55, 0.2);
+    }
+    .mystic-panel:hover {
+      border-color: rgba(212, 175, 55, 0.4);
+    }
+  </style>
+</head>
+<body class="selection:bg-astral-gold selection:text-astral-950">
+
+  <!-- Background Canvas for Star Trails & Dust -->
+  <canvas id="starTrailCanvas" class="fixed inset-0 pointer-events-none z-0 opacity-40"></canvas>
+
+  <!-- React Mount Point -->
+  <div id="root" class="relative z-10 min-h-screen flex flex-col"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // --- ICON COMPONENTS ---
+    const IconSparkles = () => (
+      <svg className="w-5 h-5 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+      </svg>
+    );
+
+    const IconBookOpen = () => (
+      <svg className="w-5 h-5 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+      </svg>
+    );
+
+    const IconGitTree = () => (
+      <svg className="w-5 h-5 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 3v12m0 0a3 3 0 103 3m-3-3a3 3 0 11-3 3M6 9a3 3 0 100-6 3 3 0 000 6zm0 0v6a3 3 0 003 3" />
+      </svg>
+    );
+
+    const IconUsers = () => (
+      <svg className="w-5 h-5 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+      </svg>
+    );
+
+    const IconCompass = () => (
+      <svg className="w-5 h-5 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 21a9 9 0 100-18 9 9 0 000 18zm0 0a9 9 0 100-18 9 9 0 000 18zm-3.536-12.464l7.072 2.122-2.122 7.072-7.072-2.122 2.122-7.072z" />
+      </svg>
+    );
+
+    const IconFlame = () => (
+      <svg className="w-5 h-5 inline-block text-amber-500 torch-glow" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M12 23c-4.97 0-9-3.582-9-8 0-3.662 2.378-6.612 4.41-8.242A1 1 0 019 7.618C8.36 9.176 8 10.957 8 12c0 1.657 1.343 3 3 3s3-1.343 3-3c0-2.312-1.04-4.838-2.618-7.094A1 1 0 0112.24 3.5C16.182 5.86 21 10.05 21 15c0 4.418-4.03 8-9 8z"/>
+      </svg>
+    );
+
+    const IconCheckCircle = () => (
+      <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+      </svg>
+    );
+
+    const IconChevronRight = () => (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+      </svg>
+    );
+
+    // --- MOCK DATA FOR TEACHING AGENTS (SAGES) ---
+    const SAGES = [
+      {
+        id: 'astraea',
+        name: 'Astraea',
+        title: 'Archon of Celestial Logic',
+        domain: 'Data Structures & Algorithmic Rigor',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
+        color: 'from-amber-500 to-yellow-600',
+        badge: 'Logical Perfection',
+        quote: 'As Polaris guides sailors through tempestuous seas, logic navigates the mind through complex algorithms.',
+        greeting: 'Greetings seeker. Let us dissect time complexity and memory geometry with mathematical grace.'
+      },
+      {
+        id: 'ignis',
+        name: 'Ignis',
+        title: 'Master of the Flame Architectures',
+        domain: 'Systems Concurrency & Low-Level Engines',
+        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=300&q=80',
+        color: 'from-orange-600 to-red-600',
+        badge: 'Pragmatic Forge',
+        quote: 'Code is tempered in the forge of edge-cases and hardware constraints. Build with fire.',
+        greeting: 'Welcome to the forge! Ready to stress-test your threads and eliminate race conditions?'
+      },
+      {
+        id: 'sophia',
+        name: 'Sophia',
+        title: 'Scholar of the Ancient Codex',
+        domain: 'Distributed Systems & Conceptual Wisdom',
+        avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+        color: 'from-sky-400 to-indigo-600',
+        badge: 'Historical Wisdom',
+        quote: 'To design the future of systems, one must first read the etched ruins of past paradigms.',
+        greeting: 'Salutations. Let us explore the lore of Consensus protocols and CAP theorem trade-offs.'
+      }
+    ];
+
+    // --- MOCK LEARNING TREES / CONSTELLATIONS DATA ---
+    const LEARNING_TREES = [
+      {
+        id: 'tree-dsa',
+        title: 'Constellation of Algorithmic Mastery',
+        description: 'Traverse from foundational arrays to hyper-dimensional graph traversals.',
+        difficulty: 'Adept Sigil',
+        nodesCompleted: 14,
+        totalNodes: 20,
+        nodes: [
+          { id: 'n1', title: '1. Memory Layouts & Arrays', status: 'completed', x: 10, y: 50 },
+          { id: 'n2', title: '2. Pointers & Linked Beacons', status: 'completed', x: 25, y: 30 },
+          { id: 'n3', title: '3. Stacks & Queues Shrine', status: 'completed', x: 25, y: 70 },
+          { id: 'n4', title: '4. Binary Search Constellation', status: 'completed', x: 45, y: 50 },
+          { id: 'n5', title: '5. Balanced Trees (AVL & Red-Black)', status: 'active', x: 65, y: 30 },
+          { id: 'n6', title: '6. Heap & Priority Runes', status: 'locked', x: 65, y: 70 },
+          { id: 'n7', title: '7. Graph Traversal & Dijkstra Celestial', status: 'locked', x: 85, y: 50 }
+        ]
+      },
+      {
+        id: 'tree-sys',
+        title: 'Vault of Distributed Arcana',
+        description: 'Understand fault tolerance, Paxos, Raft, and distributed ledgers.',
+        difficulty: 'Archmage Crest',
+        nodesCompleted: 6,
+        totalNodes: 15,
+        nodes: [
+          { id: 's1', title: '1. Network Sockets & Protocols', status: 'completed', x: 15, y: 50 },
+          { id: 's2', title: '2. RPC & Serialization Runes', status: 'active', x: 45, y: 30 },
+          { id: 's3', title: '3. Consensus (Raft & Paxos)', status: 'locked', x: 45, y: 70 },
+          { id: 's4', title: '4. Distributed Caching Towers', status: 'locked', x: 75, y: 50 }
+        ]
+      }
+    ];
+
+    // --- MOCK GFG-STYLE ARTICLES DATA ---
+    const MOCK_ARTICLES = [
+      {
+        id: 'art-1',
+        treeId: 'tree-dsa',
+        title: 'Deep Dive: Self-Balancing Red-Black Trees',
+        category: 'Data Structures',
+        readTime: '12 min read',
+        author: 'Astraea',
+        authorRole: 'Archon of Celestial Logic',
+        updatedDate: 'Autumn Equinox, 2026',
+        difficulty: 'Adept',
+        sections: [
+          {
+            id: 'intro',
+            title: 'I. The Sacred Symmetry of Balanced Search',
+            content: `In computer science and algorithms, a **Red-Black Tree** is a self-balancing binary search tree. Each node stores an extra bit representing color (either **Red** or **Black**), used to ensure that the tree remains approximately balanced during insertions and deletions.
+
+When a tree is modified, the new tree is rearranged and repainted to restore color properties. The balancing, while not perfect, is good enough to guarantee searching in **O(log n)** time, where *n* is the total number of elements.`
+          },
+          {
+            id: 'properties',
+            title: 'II. The Five Inviolable Invariants',
+            content: `To maintain celestial balance, every valid Red-Black Tree must strictly observe five mythic rules:
+
+1. **Node Color**: Every node is either Red or Black.
+2. **Root Invariant**: The root node is always Black.
+3. **Leaf Invariant**: Every leaf (NIL pointer) is Black.
+4. **Red Non-Consecutive Rule**: If a node is Red, then both its children are Black.
+5. **Black Height Invariant**: Every path from a given node to any of its descendant NIL nodes contains the exact same number of Black nodes.`
+          },
+          {
+            id: 'code-impl',
+            title: 'III. C++ & Python Rotations (The Left Rotation Sigil)',
+            codeLanguage: 'cpp',
+            codeSnippet: `// Left Rotation Operation in C++
+struct Node {
+    int data;
+    bool color; // true = RED, false = BLACK
+    Node *left, *right, *parent;
+};
+
+void leftRotate(Node* &root, Node* &x) {
+    Node* y = x->right;
+    x->right = y->left;
+
+    if (y->left != nullptr)
+        y->left->parent = x;
+
+    y->parent = x->parent;
+
+    if (x->parent == nullptr)
+        root = y;
+    else if (x == x->parent->left)
+        x->parent->left = y;
+    else
+        x->parent->right = y;
+
+    y->left = x;
+    x->parent = y;
+}`,
+            explanation: `Notice how the left rotation shifts node **y** up to replace **x**, maintaining the binary search ordering invariant while adjusting sub-tree heights!`
+          },
+          {
+            id: 'practice',
+            title: 'IV. Test Your Knowledge with Sage Ignis',
+            content: 'Review the rules above before attempting the interactive quiz in the right pane sidebar.'
+          }
+        ]
+      }
+    ];
+
+    function PolarisApp() {
+      const [activeTab, setActiveTab] = useState('article'); // 'article', 'tree', 'sages', 'codex'
+      const [selectedSage, setSelectedSage] = useState(SAGES[0]);
+      const [selectedArticle, setSelectedArticle] = useState(MOCK_ARTICLES[0]);
+      const [chatMessages, setChatMessages] = useState([
+        { sender: SAGES[0].name, text: SAGES[0].greeting }
+      ]);
+      const [userQuery, setUserQuery] = useState('');
+      const [isGenerating, setIsGenerating] = useState(false);
+      const [activeSectionId, setActiveSectionId] = useState('intro');
+
+      // Change Sage
+      const handleSageSelect = (sage) => {
+        setSelectedSage(sage);
+        setChatMessages(prev => [
+          ...prev,
+          { sender: sage.name, text: sage.greeting, isSystemNotice: true }
+        ]);
+      };
+
+      // Simulated Gemini API / Interactive Response
+      const handleSendMessage = async (e) => {
+        e.preventDefault();
+        if (!userQuery.trim() || isGenerating) return;
+
+        const currentMsg = userQuery;
+        setUserQuery('');
+        setChatMessages(prev => [...prev, { sender: 'You', text: currentMsg }]);
+        setIsGenerating(true);
+
+        try {
+          const apiKey = "";
+          const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+          
+          const systemPrompt = `You are ${selectedSage.name}, ${selectedSage.title} on Polaris, a mythic and sleek learning platform. Your persona focus is: ${selectedSage.domain}. Speak with an elegant, encouraging, authoritative yet mystical scholar tone. Keep your answer clear, informative, concise (under 120 words), and directly reference the user's question about the current article (${selectedArticle.title}).`;
+
+          const payload = {
+            contents: [{ parts: [{ text: `User Question: ${currentMsg}` }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] }
+          };
+
+          const res = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || "The stars align in silent contemplation...";
+            setChatMessages(prev => [...prev, { sender: selectedSage.name, text: replyText }]);
+          } else {
+            setTimeout(() => {
+              setChatMessages(prev => [...prev, {
+                sender: selectedSage.name,
+                text: `By the stars, '${currentMsg}' touches upon a core principle! In ${selectedArticle.title}, always remember that balance is maintained through rotational transformations and invariant verification.`
+              }]);
+            }, 800);
+          }
+        } catch (err) {
+          setChatMessages(prev => [...prev, {
+            sender: selectedSage.name,
+            text: `The mystic currents fluttered. Remember: Red-Black tree properties guarantee O(log n) time complexity by enforcing strict color invariants!`
+          }]);
+        } finally {
+          setIsGenerating(false);
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col text-slate-200">
+          
+          {/* TOP MYTHIC NAVIGATION HEADER */}
+          <header className="sticky top-0 z-50 bg-astral-950/90 backdrop-blur-md border-b border-astral-gold/30 shadow-lg px-4 lg:px-8 py-3">
+            <div className="max-w-7xl mx-auto flex items-center justify-between">
+              
+              {/* Brand Logo & Tagline */}
+              <div className="flex items-center space-x-4">
+                <div className="relative group cursor-pointer" onClick={() => setActiveTab('article')}>
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-astral-gold via-amber-500 to-astral-mythicBlue flex items-center justify-center p-[2px] shadow-gold-glow">
+                    <div className="w-full h-full bg-astral-950 rounded-full flex items-center justify-center">
+                      <span className="font-serif text-xl font-bold text-astral-gold tracking-tighter">P★</span>
+                    </div>
+                  </div>
+                  {/* Outer Orbit Light Ring */}
+                  <div className="absolute -inset-1 rounded-full border border-astral-gold/30 animate-orbit-slow pointer-events-none"></div>
+                </div>
+
+                <div>
+                  <h1 className="font-serif text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-astral-starlight via-astral-gold to-amber-200 tracking-wider uppercase">
+                    POLARIS
+                  </h1>
+                  <p className="text-[10px] text-astral-gold/80 tracking-widest font-mono uppercase">
+                    Guided Arcana & Mystical Knowledge
+                  </p>
+                </div>
+              </div>
+
+              {/* Navigation Ritual Tabs */}
+              <nav className="hidden md:flex items-center space-x-1 bg-astral-900/80 p-1.5 rounded-xl border border-astral-gold/20">
+                <button
+                  onClick={() => setActiveTab('article')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-serif transition-all duration-300 flex items-center space-x-2 ${
+                    activeTab === 'article'
+                      ? 'bg-gradient-to-r from-astral-gold/20 to-amber-500/20 text-astral-gold border border-astral-gold/40 shadow-gold-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-astral-800/50'
+                  }`}
+                >
+                  <IconBookOpen />
+                  <span>Illuminated Article</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('tree')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-serif transition-all duration-300 flex items-center space-x-2 ${
+                    activeTab === 'tree'
+                      ? 'bg-gradient-to-r from-astral-gold/20 to-amber-500/20 text-astral-gold border border-astral-gold/40 shadow-gold-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-astral-800/50'
+                  }`}
+                >
+                  <IconGitTree />
+                  <span>Constellation Tree</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('sages')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-serif transition-all duration-300 flex items-center space-x-2 ${
+                    activeTab === 'sages'
+                      ? 'bg-gradient-to-r from-astral-gold/20 to-amber-500/20 text-astral-gold border border-astral-gold/40 shadow-gold-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-astral-800/50'
+                  }`}
+                >
+                  <IconUsers />
+                  <span>Sanctuary of Sages</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('codex')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-serif transition-all duration-300 flex items-center space-x-2 ${
+                    activeTab === 'codex'
+                      ? 'bg-gradient-to-r from-astral-gold/20 to-amber-500/20 text-astral-gold border border-astral-gold/40 shadow-gold-glow'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-astral-800/50'
+                  }`}
+                >
+                  <IconCompass />
+                  <span>Astral Codex</span>
+                </button>
+              </nav>
+
+              {/* Active Mentor Indicator & Torch Effect */}
+              <div className="flex items-center space-x-3">
+                <div className="hidden sm:flex items-center space-x-2 bg-astral-900/90 px-3 py-1.5 rounded-full border border-amber-500/30">
+                  <IconFlame />
+                  <span className="text-xs font-mono text-amber-300">
+                    Guide: <span className="text-astral-gold font-bold">{selectedSage.name}</span>
+                  </span>
+                </div>
+                
+                <button
+                  onClick={() => setActiveTab('sages')}
+                  className="w-8 h-8 rounded-full overflow-hidden border border-astral-gold/50 hover:scale-105 transition-transform"
+                  title="Switch Active Mentor Sage"
+                >
+                  <img src={selectedSage.avatar} alt={selectedSage.name} className="w-full h-full object-cover" />
+                </button>
+              </div>
+
+            </div>
+
+            {/* Mobile Nav Bar */}
+            <div className="flex md:hidden justify-around mt-2 pt-2 border-t border-astral-800 text-xs font-serif">
+              <button onClick={() => setActiveTab('article')} className={activeTab==='article' ? 'text-astral-gold font-bold' : 'text-slate-400'}>Articles</button>
+              <button onClick={() => setActiveTab('tree')} className={activeTab==='tree' ? 'text-astral-gold font-bold' : 'text-slate-400'}>Trees</button>
+              <button onClick={() => setActiveTab('sages')} className={activeTab==='sages' ? 'text-astral-gold font-bold' : 'text-slate-400'}>Sages</button>
+              <button onClick={() => setActiveTab('codex')} className={activeTab==='codex' ? 'text-astral-gold font-bold' : 'text-slate-400'}>Codex</button>
+            </div>
+          </header>
+
+          {/* MAIN CONTENT CONTAINER BASED ON ACTIVE TAB */}
+          <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8">
+            
+            {/* VIEW 1: GFG-STYLE ILLUMINATED ARTICLE READER */}
+            {activeTab === 'article' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                
+                {/* LEFT SIDEBAR: Knowledge Tree Directory & Modules */}
+                <div className="lg:col-span-3 mystic-panel rounded-2xl p-4 arch-border sticky top-24">
+                  <div className="flex items-center justify-between pb-3 mb-3 border-b border-astral-gold/20">
+                    <h3 className="font-serif text-sm font-bold text-astral-gold flex items-center space-x-2">
+                      <IconGitTree />
+                      <span>Constellation Roadmap</span>
+                    </h3>
+                    <span className="text-[10px] font-mono bg-astral-gold/10 text-astral-gold px-2 py-0.5 rounded border border-astral-gold/30">
+                      70% Mastery
+                    </span>
+                  </div>
+
+                  <div className="space-y-1 text-xs">
+                    <div className="font-mono text-slate-400 text-[11px] uppercase tracking-wider mb-2">
+                      Data Structures Arcana
+                    </div>
+                    {LEARNING_TREES[0].nodes.map((node) => (
+                      <div
+                        key={node.id}
+                        className={`p-2 rounded-lg flex items-center justify-between cursor-pointer transition-all ${
+                          node.status === 'active'
+                            ? 'bg-astral-gold/20 text-astral-gold border border-astral-gold/40 font-semibold'
+                            : node.status === 'completed'
+                            ? 'text-slate-300 hover:bg-astral-800/50'
+                            : 'text-slate-600 cursor-not-allowed'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2 truncate">
+                          {node.status === 'completed' ? (
+                            <IconCheckCircle />
+                          ) : node.status === 'active' ? (
+                            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                          ) : (
+                            <span className="w-2 h-2 rounded-full bg-slate-700"></span>
+                          )}
+                          <span className="truncate">{node.title}</span>
+                        </div>
+                        {node.status === 'active' && <IconChevronRight />}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Celestial Tip Box */}
+                  <div className="mt-6 p-3 rounded-xl bg-gradient-to-br from-astral-900 to-astral-800 border border-amber-500/30 text-xs">
+                    <div className="flex items-center space-x-2 text-amber-400 font-serif font-semibold mb-1">
+                      <IconSparkles />
+                      <span>Mentor Insight</span>
+                    </div>
+                    <p className="text-slate-300 text-[11px] leading-relaxed">
+                      "When implementing Red-Black rotations, pay special attention to maintaining parent pointer consistency."
+                    </p>
+                  </div>
+                </div>
+
+                {/* CENTER PANE: Rich Illuminated Article Content */}
+                <div className="lg:col-span-6 mystic-panel rounded-2xl p-6 md:p-8 arch-border space-y-8">
+                  
+                  {/* Article Header */}
+                  <div className="border-b border-astral-gold/20 pb-6">
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-mono bg-astral-gold/10 text-astral-gold border border-astral-gold/30">
+                        {selectedArticle.category}
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-mono bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                        Difficulty: {selectedArticle.difficulty}
+                      </span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        • {selectedArticle.readTime}
+                      </span>
+                    </div>
+
+                    <h2 className="font-serif text-2xl md:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-astral-starlight via-amber-100 to-astral-gold leading-tight">
+                      {selectedArticle.title}
+                    </h2>
+
+                    <div className="mt-4 flex items-center justify-between text-xs text-slate-400 border-t border-astral-800/80 pt-3">
+                      <div className="flex items-center space-x-2">
+                        <img src={selectedSage.avatar} className="w-6 h-6 rounded-full border border-astral-gold/50" />
+                        <span>Authored by <strong className="text-astral-gold">{selectedArticle.author}</strong></span>
+                      </div>
+                      <span>Updated: {selectedArticle.updatedDate}</span>
+                    </div>
+                  </div>
+
+                  {/* Article Body Sections */}
+                  {selectedArticle.sections.map((sec) => (
+                    <section key={sec.id} id={sec.id} className="space-y-4">
+                      <h3 className="font-serif text-xl font-bold text-astral-gold border-l-2 border-astral-gold pl-3 py-0.5">
+                        {sec.title}
+                      </h3>
+
+                      {sec.content && (
+                        <div className="text-slate-300 text-sm leading-relaxed space-y-3 whitespace-pre-line">
+                          {sec.content}
+                        </div>
+                      )}
+
+                      {/* Code Snippet Box (GFG-style with mythic polish) */}
+                      {sec.codeSnippet && (
+                        <div className="my-4 rounded-xl overflow-hidden border border-astral-gold/30 bg-astral-950 font-mono text-xs">
+                          <div className="bg-astral-900 px-4 py-2 flex items-center justify-between border-b border-astral-gold/20 text-slate-400">
+                            <span className="text-amber-400 font-semibold uppercase">{sec.codeLanguage}</span>
+                            <button
+                              onClick={() => alert("Sigil code copied to scroll buffer!")}
+                              className="hover:text-astral-gold text-[11px] flex items-center space-x-1"
+                            >
+                              <span>Copy Code</span>
+                            </button>
+                          </div>
+                          <pre className="p-4 text-emerald-300 overflow-x-auto leading-relaxed">
+                            <code>{sec.codeSnippet}</code>
+                          </pre>
+                        </div>
+                      )}
+
+                      {sec.explanation && (
+                        <div className="p-3 rounded-lg bg-astral-900/60 border-l-4 border-amber-500 text-xs text-amber-200 italic">
+                          ✦ {sec.explanation}
+                        </div>
+                      )}
+                    </section>
+                  ))}
+
+                  {/* Interactive Quick Practice Checkpoint */}
+                  <div className="mt-8 p-6 rounded-2xl bg-gradient-to-r from-astral-900 via-astral-800 to-astral-900 border border-astral-gold/40">
+                    <div className="flex items-center space-x-3 mb-3">
+                      <IconSparkles />
+                      <h4 className="font-serif text-base font-bold text-astral-gold">
+                        Interactive Knowledge Checkpoint
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-300 mb-4">
+                      What is the maximum height of a Red-Black tree with <i>N</i> nodes?
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
+                      <button 
+                        onClick={() => alert("Correct! Red-Black tree height is guaranteed to be at most 2 * log2(N + 1).")}
+                        className="p-2.5 rounded-xl border border-astral-gold/30 hover:border-astral-gold hover:bg-astral-gold/10 text-left transition-all"
+                      >
+                        A. 2 * log₂ (N + 1)
+                      </button>
+                      <button 
+                        onClick={() => alert("Incorrect. Re-read section II regarding Black Height Invariants.")}
+                        className="p-2.5 rounded-xl border border-slate-700 hover:border-red-500/50 hover:bg-red-500/10 text-left transition-all text-slate-400"
+                      >
+                        B. N / 2
+                      </button>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* RIGHT SIDEBAR: Interactive Teaching Agent (Sage Chat & TOC) */}
+                <div className="lg:col-span-3 space-y-6 sticky top-24">
+                  
+                  {/* Table of Contents */}
+                  <div className="mystic-panel rounded-2xl p-4 arch-border">
+                    <h4 className="font-serif text-xs font-bold text-astral-gold uppercase tracking-wider mb-3">
+                      Table of Contents
+                    </h4>
+                    <ul className="space-y-2 text-xs font-serif text-slate-400">
+                      {selectedArticle.sections.map((sec) => (
+                        <li key={sec.id}>
+                          <a
+                            href={`#${sec.id}`}
+                            className="hover:text-astral-gold transition-colors block py-0.5 border-l border-astral-800 pl-2 hover:border-astral-gold"
+                          >
+                            {sec.title}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* AI Mentor Assistant Panel */}
+                  <div className="mystic-panel rounded-2xl p-4 arch-border flex flex-col h-[420px]">
+                    
+                    {/* Mentor Header */}
+                    <div className="flex items-center justify-between pb-3 mb-3 border-b border-astral-gold/20">
+                      <div className="flex items-center space-x-2">
+                        <div className="relative">
+                          <img src={selectedSage.avatar} className="w-8 h-8 rounded-full border border-astral-gold" />
+                          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-astral-950"></span>
+                        </div>
+                        <div>
+                          <div className="font-serif text-xs font-bold text-astral-gold">{selectedSage.name}</div>
+                          <div className="text-[10px] text-slate-400 truncate max-w-[120px]">{selectedSage.title}</div>
+                        </div>
+                      </div>
+                      
+                      <button
+                        onClick={() => setActiveTab('sages')}
+                        className="text-[10px] text-amber-400 hover:underline font-mono"
+                      >
+                        Switch
+                      </button>
+                    </div>
+
+                    {/* Chat Messages Window */}
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-xs">
+                      {chatMessages.map((msg, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-2.5 rounded-xl leading-relaxed ${
+                            msg.isSystemNotice
+                              ? 'bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] text-center'
+                              : msg.sender === 'You'
+                              ? 'bg-astral-gold/20 border border-astral-gold/30 text-slate-100 ml-4'
+                              : 'bg-astral-900 border border-astral-gold/20 text-slate-300 mr-2'
+                          }`}
+                        >
+                          <div className="font-serif font-bold text-[10px] text-astral-gold mb-1">
+                            {msg.sender}
+                          </div>
+                          <div>{msg.text}</div>
+                        </div>
+                      ))}
+                      {isGenerating && (
+                        <div className="text-xs text-amber-400 italic font-serif flex items-center space-x-2">
+                          <IconSparkles />
+                          <span>{selectedSage.name} is consulting the celestial stars...</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Query Input Box */}
+                    <form onSubmit={handleSendMessage} className="mt-3 pt-2 border-t border-astral-800 flex gap-1.5">
+                      <input
+                        type="text"
+                        value={userQuery}
+                        onChange={(e) => setUserQuery(e.target.value)}
+                        placeholder={`Ask ${selectedSage.name} anything...`}
+                        className="flex-1 bg-astral-950 border border-astral-gold/30 rounded-xl px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-astral-gold"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isGenerating}
+                        className="px-3 py-1.5 bg-gradient-to-r from-astral-gold to-amber-600 text-astral-950 font-serif font-bold text-xs rounded-xl shadow-gold-glow hover:brightness-110 disabled:opacity-50"
+                      >
+                        Invoke
+                      </button>
+                    </form>
+
+                  </div>
+
+                </div>
+
+              </div>
+            )}
+
+            {/* VIEW 2: CONSTELLATION SKILL TREES */}
+            {activeTab === 'tree' && (
+              <div className="space-y-8">
+                <div className="text-center max-w-2xl mx-auto space-y-2">
+                  <h2 className="font-serif text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-astral-gold via-amber-200 to-astral-starlight">
+                    Constellations of Arcana
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Navigate through interconnected skill paths. Each node represents a sacred module of knowledge.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-8">
+                  {LEARNING_TREES.map((tree) => (
+                    <div key={tree.id} className="mystic-panel rounded-3xl p-6 md:p-8 arch-border relative overflow-hidden">
+                      <div className="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-astral-gold/20 pb-4">
+                        <div>
+                          <h3 className="font-serif text-xl font-bold text-astral-gold">{tree.title}</h3>
+                          <p className="text-xs text-slate-400 mt-1">{tree.description}</p>
+                        </div>
+                        <div className="flex items-center space-x-3">
+                          <span className="text-xs font-mono text-amber-400 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/30">
+                            {tree.nodesCompleted} / {tree.totalNodes} Runes Unlocked
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Interactive Visual Map Container */}
+                      <div className="relative w-full h-80 bg-astral-950/80 rounded-2xl border border-astral-gold/20 flex items-center justify-center overflow-hidden p-6">
+                        
+                        {/* Background Orbit Aesthetics */}
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
+                          <div className="w-96 h-96 rounded-full border border-astral-gold animate-orbit-slow"></div>
+                          <div className="w-64 h-64 rounded-full border border-astral-mythicBlue animate-orbit-reverse"></div>
+                        </div>
+
+                        {/* Interactive Node Path */}
+                        <div className="relative w-full h-full flex items-center justify-between px-8">
+                          {tree.nodes.map((node, i) => (
+                            <div key={node.id} className="flex flex-col items-center group relative z-10">
+                              <button
+                                onClick={() => {
+                                  setActiveTab('article');
+                                  alert(`Jumping to module: ${node.title}`);
+                                }}
+                                className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
+                                  node.status === 'completed'
+                                    ? 'bg-gradient-to-tr from-astral-gold to-amber-400 text-astral-950 shadow-gold-glow scale-100'
+                                    : node.status === 'active'
+                                    ? 'bg-astral-900 border-2 border-amber-400 text-amber-400 shadow-torch-glow scale-110 animate-pulse'
+                                    : 'bg-astral-900 border border-slate-700 text-slate-600'
+                                }`}
+                              >
+                                <span className="font-serif font-bold text-sm">{i + 1}</span>
+                              </button>
+                              
+                              <span className="mt-2 text-[11px] font-serif text-center max-w-[100px] text-slate-300 group-hover:text-astral-gold transition-colors">
+                                {node.title}
+                              </span>
+
+                              {/* Hover Sigil Tooltip */}
+                              <div className="absolute bottom-16 hidden group-hover:block bg-astral-900 border border-astral-gold p-2 rounded-xl text-[10px] w-36 text-center shadow-lg z-20">
+                                Click to enter lesson scroll
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 3: SANCTUARY OF SAGES (AI TEACHING AGENTS) */}
+            {activeTab === 'sages' && (
+              <div className="space-y-8 max-w-5xl mx-auto">
+                <div className="text-center space-y-2">
+                  <h2 className="font-serif text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-astral-gold via-amber-200 to-astral-starlight">
+                    The Council of Teaching Sages
+                  </h2>
+                  <p className="text-xs text-slate-400 max-w-lg mx-auto">
+                    Select your mentor guide. Each Sage possesses unique teaching philosophies, pedagogical styles, and focus areas.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {SAGES.map((sage) => {
+                    const isSelected = selectedSage.id === sage.id;
+                    return (
+                      <div
+                        key={sage.id}
+                        className={`mystic-panel rounded-3xl p-6 arch-border transition-all duration-300 flex flex-col justify-between ${
+                          isSelected ? 'border-astral-gold shadow-gold-glow scale-105 bg-astral-900/90' : 'hover:border-astral-gold/40'
+                        }`}
+                      >
+                        <div className="space-y-4">
+                          <div className="relative w-24 h-24 mx-auto rounded-full overflow-hidden border-2 border-astral-gold p-1 shadow-torch-glow">
+                            <img src={sage.avatar} alt={sage.name} className="w-full h-full object-cover rounded-full" />
+                          </div>
+
+                          <div className="text-center">
+                            <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/30 uppercase">
+                              {sage.badge}
+                            </span>
+                            <h3 className="font-serif text-xl font-bold text-astral-gold mt-2">{sage.name}</h3>
+                            <p className="text-xs text-slate-400 font-serif italic">{sage.title}</p>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-astral-950/80 border border-astral-gold/20 text-xs text-slate-300 italic">
+                            "{sage.quote}"
+                          </div>
+
+                          <div className="text-xs space-y-1">
+                            <div className="text-slate-400 font-mono text-[10px] uppercase">Domain Expertise:</div>
+                            <div className="text-astral-starlight font-serif">{sage.domain}</div>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            handleSageSelect(sage);
+                            setActiveTab('article');
+                          }}
+                          className={`mt-6 w-full py-2.5 rounded-xl font-serif text-xs font-bold transition-all ${
+                            isSelected
+                              ? 'bg-gradient-to-r from-astral-gold to-amber-500 text-astral-950 shadow-gold-glow'
+                              : 'bg-astral-800 text-slate-300 hover:text-astral-gold hover:bg-astral-700'
+                          }`}
+                        >
+                          {isSelected ? 'Currently Bound Mentor' : 'Bind Mentor Sage'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 4: ASTRAL CODEX (ARTICLE REPOSITORY) */}
+            {activeTab === 'codex' && (
+              <div className="space-y-6">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-4 border-b border-astral-gold/20 pb-4">
+                  <div>
+                    <h2 className="font-serif text-2xl font-bold text-astral-gold">Astral Codex & Article Library</h2>
+                    <p className="text-xs text-slate-400">Explore illuminated scrolls and comprehensive technical guides.</p>
+                  </div>
+
+                  <div className="w-full md:w-72">
+                    <input
+                      type="text"
+                      placeholder="Search arcana scrolls..."
+                      className="w-full bg-astral-900 border border-astral-gold/30 rounded-xl px-4 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-astral-gold"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {[
+                    { title: 'Self-Balancing Red-Black Trees', time: '12 min', tag: 'Data Structures', sage: 'Astraea' },
+                    { title: 'Consensus Protocols: Raft vs Paxos', time: '18 min', tag: 'Distributed Systems', sage: 'Sophia' },
+                    { title: 'Zero-Copy I/O & Memory Mapped Files', time: '15 min', tag: 'Low Level Systems', sage: 'Ignis' },
+                    { title: 'Graph Traversals: Dijkstra & A* Star Trail', time: '14 min', tag: 'Algorithms', sage: 'Astraea' },
+                    { title: 'Lock-Free Queues & Atomic Instructions', time: '20 min', tag: 'Concurrency', sage: 'Ignis' },
+                    { title: 'Cap Theorem & Eventual Consistency', time: '10 min', tag: 'Distributed Systems', sage: 'Sophia' }
+                  ].map((item, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => setActiveTab('article')}
+                      className="mystic-panel rounded-2xl p-5 arch-border hover:border-astral-gold hover:shadow-gold-glow transition-all duration-300 cursor-pointer space-y-3"
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="px-2.5 py-0.5 rounded-full font-mono bg-astral-gold/10 text-astral-gold border border-astral-gold/30">
+                          {item.tag}
+                        </span>
+                        <span className="text-slate-400 font-mono text-[11px]">{item.time}</span>
+                      </div>
+
+                      <h3 className="font-serif text-base font-bold text-astral-starlight hover:text-astral-gold transition-colors">
+                        {item.title}
+                      </h3>
+
+                      <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-astral-800">
+                        <span>Mentor: <strong className="text-amber-400">{item.sage}</strong></span>
+                        <span className="text-astral-gold font-serif flex items-center space-x-1">
+                          <span>Read Scroll</span>
+                          <IconChevronRight />
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </main>
+
+          {/* FOOTER */}
+          <footer className="mt-auto border-t border-astral-gold/20 bg-astral-950 py-6 text-center text-xs text-slate-500 font-serif">
+            <p>Polaris — Guided Knowledge Arcana © 2026. Guided by the Ancient Stars.</p>
+          </footer>
+
+        </div>
+      );
+    }
+
+    // Background Star Trail & Dust Canvas Animation Script
+    window.onload = function() {
+      const canvas = document.getElementById('starTrailCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+
+      let width = (canvas.width = window.innerWidth);
+      let height = (canvas.height = window.innerHeight);
+
+      window.addEventListener('resize', () => {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+      });
+
+      const stars = Array.from({ length: 120 }, () => ({
+        x: Math.random() * width,
+        y: Math.random() * height,
+        radius: Math.random() * 1.5 + 0.5,
+        alpha: Math.random(),
+        speed: Math.random() * 0.02 + 0.005
+      }));
+
+      function animateStars() {
+        ctx.clearRect(0, 0, width, height);
+
+        stars.forEach((star) => {
+          star.alpha += star.speed;
+          if (star.alpha > 1 || star.alpha < 0) star.speed = -star.speed;
+
+          ctx.beginPath();
+          ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(212, 175, 55, ${Math.abs(star.alpha) * 0.6})`;
+          ctx.fill();
+        });
+
+        requestAnimationFrame(animateStars);
+      }
+
+      animateStars();
+
+      // Render React DOM
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<PolarisApp />);
+    };
+  </script>
+</body>
+</html>

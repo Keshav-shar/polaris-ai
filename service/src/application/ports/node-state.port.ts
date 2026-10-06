@@ -1,3 +1,4 @@
+import type { WriterOutput } from "../../domain/schemas/article.schema";
 import type { NodeState } from "../../domain/schemas/node-state.schema";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 
@@ -36,4 +37,22 @@ export type NodeStatePort = {
     childId: string,
     childStatus: TerminalStatus,
   ): Promise<NodeState | undefined>;
+
+  // --- Article pass (Phase 10). The same two rules as construction, on the articleStatus axis. ---
+
+  // Rule 1 + 2, for articles. Moves articleStatus to in_progress - UNLESS it is already done or failed,
+  // in which case the item comes back untouched so a duplicate delivery is a no-op. An item that already
+  // has a stored `article` comes back with it, so a retry never calls the writer again.
+  // Throws when the node does not exist: an article message for an unconstructed node is a bug, not a
+  // race, and swallowing it would hide a broken enqueue.
+  claimArticle(nodeId: string): Promise<NodeState>;
+
+  // Rule 2, for articles. Write-once: an existing draft is returned as-is rather than overwritten, so two
+  // deliveries of the same node can never store different articles or different questions.
+  saveArticle(nodeId: string, article: WriterOutput): Promise<NodeState>;
+
+  // The article twin of `finish`, and the reason it exists: resolves undefined when the article was
+  // already done/failed, so a redelivery that slipped past claimArticle cannot count articlesDone twice
+  // and mark the run `done` before every article is in.
+  finishArticle(nodeId: string, status: TerminalStatus): Promise<NodeState | undefined>;
 };

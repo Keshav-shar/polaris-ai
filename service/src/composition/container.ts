@@ -1,4 +1,6 @@
+import type { GetNode } from "../application/use-cases/get-node.use-case";
 import type { GetTree } from "../application/use-cases/get-tree.use-case";
+import type { ListRuns } from "../application/use-cases/list-runs.use-case";
 import type { StartTreeBuild } from "../application/use-cases/start-tree-build.use-case";
 import { type Env, EnvError, isLlmConfigured } from "../config/env";
 import type { Logger } from "../shared/logger";
@@ -15,6 +17,9 @@ export type ApiContainer = {
   startTreeBuild(): StartTreeBuild;
   // Read path: never starts the worker, so a halted run keeps reading as halted.
   getTree(): GetTree;
+  // Read path, same rule: listing runs must not start a build.
+  listRuns(): ListRuns;
+  getNode(): GetNode;
   shutdown(): Promise<void>;
 };
 
@@ -43,6 +48,9 @@ export function createContainer(env: Env, logger: Logger): ApiContainer {
       // Idempotent while running, and it clears a halt: after a quota stall the worker stays halted with
       // the stalled message still queued, so the next run would sit at `constructing` forever (C55).
       current.worker.start();
+      // Started here too, not lazily on the first article: since C91 the FIRST expansion already sends an
+      // article message, so a stopped article worker would leave scrolls queued from the very first node.
+      current.articleWorker.start();
       return current.startTreeBuild;
     },
 
@@ -50,8 +58,17 @@ export function createContainer(env: Env, logger: Logger): ApiContainer {
       return built().getTree;
     },
 
+    listRuns() {
+      return built().listRuns;
+    },
+
+    getNode() {
+      return built().getNode;
+    },
+
     async shutdown() {
-      await stack?.worker.stop();
+      // Both passes, or a SIGTERM would leave the article worker draining into a dying process.
+      await Promise.all([stack?.worker.stop(), stack?.articleWorker.stop()]);
     },
   };
 }

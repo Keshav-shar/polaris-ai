@@ -190,7 +190,7 @@ describe("createOpenAiCompatibleLlm", () => {
       const failing = failingClient({ status: 429, message: "free-models-per-day" });
       const llm = createOpenAiCompatibleLlm(config, failing.client, fakeClock().sleep);
       await expect(ask(llm)).rejects.toThrow(/test-model/);
-      await expect(ask(llm)).rejects.toThrow(/LLM_PROVIDER=fallback/);
+      await expect(ask(llm)).rejects.toThrow(/LLM_MODELS/);
     });
 
     it("backs off exponentially on a burst limit and then succeeds", async () => {
@@ -248,6 +248,39 @@ describe("createOpenAiCompatibleLlm", () => {
       const { client } = fakeClient(null);
       const llm = createOpenAiCompatibleLlm(config, client, fakeClock().sleep);
       await expect(ask(llm)).rejects.toThrow(/no content/);
+    });
+
+    // The contract the model pool depends on: with maxRetries 0 a retryable error must come back RAW and
+    // immediately, so the pool can classify it and rotate to another model instead of sleeping here.
+    describe("maxRetries override", () => {
+      it("rethrows a retryable error raw after ONE attempt and never sleeps", async () => {
+        const failing = failingClient({ status: 429, message: "tokens per minute (TPM): Limit 8000" });
+        const clock = fakeClock();
+        const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 0 }, failing.client, clock.sleep);
+        await expect(ask(llm)).rejects.toMatchObject({ status: 429 });
+        expect(failing.calls).toBe(1);
+        expect(clock.sleeps).toEqual([]);
+      });
+
+      it("still throws QuotaExhaustedError on a daily quota, which precedes the attempt budget", async () => {
+        const failing = failingClient({ status: 429, message: "Limit requests per day." });
+        const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 0 }, failing.client, fakeClock().sleep);
+        await expect(ask(llm)).rejects.toBeInstanceOf(QuotaExhaustedError);
+        expect(failing.calls).toBe(1);
+      });
+
+      it("makes exactly maxRetries + 1 attempts", async () => {
+        const failing = failingClient({ status: 503, message: "overloaded" });
+        const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 2 }, failing.client, fakeClock().sleep);
+        await expect(ask(llm)).rejects.toMatchObject({ status: 503 });
+        expect(failing.calls).toBe(3);
+      });
+
+      it("rejects a negative or non-integer budget at construction", () => {
+        const { client } = fakeClient();
+        expect(() => createOpenAiCompatibleLlm({ ...config, maxRetries: -1 }, client)).toThrow(RangeError);
+        expect(() => createOpenAiCompatibleLlm({ ...config, maxRetries: 1.5 }, client)).toThrow(RangeError);
+      });
     });
   });
 });

@@ -7,5 +7,10 @@
 **Must not depend on:** LLM adapters.
 
 **Planned contents:**
-- `wikipedia.adapter.ts` — MediaWiki `list=search`, `SEARCH_USER_AGENT`, HTML stripped, canonical URLs, 15 s timeout (Phase 9)
-- `tavily.adapter.ts` — Bearer auth, same port (Phase 9)
+- `wikipedia.adapter.ts` — built (Phase 9). MediaWiki `list=search`, `SEARCH_USER_AGENT`, HTML
+  stripped and entities decoded, canonical `?curid=` URLs (rename-proof, because citations are read
+  back much later), `SEARCH.TIMEOUT_MS` combined with the caller's signal, and an injectable `fetch`
+  so its tests need no network. A body it cannot parse is an EMPTY result set, not a throw: a node
+  with no sources still gets an unverified article rather than failing the run
+- `tavily.adapter.ts` — built (Phase 9). Bearer auth on the same port, opt-in via
+  `SEARCH_PROVIDER=tavily`; the key is never echoed in an error message

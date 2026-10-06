@@ -10,8 +10,8 @@ export class QuotaExhaustedError extends DomainError {
     readonly retryAfterMs?: number,
   ) {
     super(
-      `LLM daily quota exhausted for model "${model}". Switch LLM_PROVIDER=fallback in service/.env ` +
-        "or wait for the provider's reset (docs/setup.md).",
+      `LLM daily quota exhausted for model "${model}". Add another vetted console model to ` +
+        "LLM_MODELS in service/.env (docs/models.md) or wait for the provider's reset.",
     );
   }
 }

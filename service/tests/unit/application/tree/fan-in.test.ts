@@ -104,6 +104,31 @@ describe("fan-in", () => {
     expect(run?.status).toBe("failed");
   });
 
+  it("does not declare the run done while construction is still running", async () => {
+    // The trap C91 opens: articles land while nodesDone is still climbing, so counting alone would call
+    // a run finished after its first leaf's scroll.
+    await fanIn.completeConstruction(light.nodeId, "done");
+    expect(await fanIn.completeArticle(runId, light.nodeId, "done")).toBe(true);
+    expect((await ctx.runRepo.get(runId))?.status).toBe("constructing");
+
+    await fanIn.completeConstruction(calvin.nodeId, "done");
+    expect((await ctx.runRepo.get(runId))?.status).toBe("constructed");
+    await fanIn.completeArticle(runId, calvin.nodeId, "done");
+    await fanIn.completeArticle(runId, root.nodeId, "done");
+    expect((await ctx.runRepo.get(runId))?.status).toBe("done");
+  });
+
+  it("finishes a run whose articles were all already in when construction ended", async () => {
+    // The other half: if every scroll is written before the root completes, the only moment left to
+    // notice is the root's own completion.
+    await fanIn.completeArticle(runId, root.nodeId, "done");
+    await fanIn.completeArticle(runId, light.nodeId, "done");
+    await fanIn.completeArticle(runId, calvin.nodeId, "done");
+    await fanIn.completeConstruction(light.nodeId, "done");
+    await fanIn.completeConstruction(calvin.nodeId, "done");
+    expect((await ctx.runRepo.get(runId))?.status).toBe("done");
+  });
+
   it("is a no-op for a node that is already terminal", async () => {
     await fanIn.completeConstruction(light.nodeId, "done");
     await fanIn.completeConstruction(light.nodeId, "done");

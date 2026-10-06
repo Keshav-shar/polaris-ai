@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WriterOutput } from "./article.schema";
 import { Brief } from "./node.schema";
 
 // In-flight build state: the DynamoDB `PolarisNodes` item shape (in-memory record locally).
@@ -21,6 +22,12 @@ export const NodeState = z.object({
   completedChildIds: z.array(z.uuid()).default([]), // String Set in DynamoDB
   failedChildren: z.number().int().min(0).default(0),
   articleStatus: ArticleStatus.optional(),
+  // Written once, like `result`, and reused on a redelivery so a retry never calls the LLM again
+  // (idempotency rule 2, docs/aws-retrofit.md). It holds the WHOLE writer output, questions included -
+  // storing only the article would make a retry regenerate the questions. Present in
+  // docs/data-model.md's DynamoDB item all along; amendment A2 and C38 omitted it, which is the
+  // doc-vs-doc gap C77 records.
+  article: WriterOutput.optional(),
 });
 export type NodeState = z.infer<typeof NodeState>;
 

@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import type { ChatMessage, ChatOptions, LlmPort } from "../../application/ports/llm.port";
 import { LLM } from "../../config/constants";
 import { QuotaExhaustedError } from "../../domain/errors/quota-exhausted.error";
+import { TransportUnavailableError } from "../../domain/errors/transport-unavailable.error";
 import { createLimiter } from "./concurrency";
 import { classifyLlmError } from "./rate-limit";
 
@@ -11,9 +12,14 @@ export type OpenAiCompatibleConfig = {
   model: string;
   jsonMode: boolean;
   maxConcurrency: number;
-  // undefined = never send temperature (provider default; required for Gemini 3).
+  // undefined = never send temperature, so the provider's own default applies.
   temperature?: number | undefined;
   seedMode?: "off" | "node";
+  // Retries this adapter makes ITSELF, default LLM.MAX_RETRIES. Set 0 when a caller above owns the retry
+  // decision - the model pool under LLM_MODEL_ROTATION=throttle, which must SEE a per-minute 429 at
+  // attempt 0 to rotate instead of sleeping through it. A daily quota still throws QuotaExhaustedError,
+  // because that branch precedes the attempt-budget check.
+  maxRetries?: number;
 };
 
 type CompletionRequest = {
@@ -37,7 +43,8 @@ export type Sleep = (ms: number) => Promise<void>;
 
 const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// One client for every OpenAI-compatible provider (Gemini, Groq, OpenRouter). The SDK runs with
+// The client for the provider's OpenAI-compatible endpoint (Groq; the shape is the same for any of
+// them). The SDK runs with
 // maxRetries: 0 so the retry loop lives here, where a 429 can be classified BEFORE an attempt is spent on
 // it: a daily quota throws at once, a burst limit backs off (docs/conflicts.md C50). The limiter keeps
 // in-flight calls inside the provider's free-tier RPM.
@@ -55,6 +62,10 @@ export function createOpenAiCompatibleLlm(
       timeout: LLM.TIMEOUT_MS,
     });
   const limit = createLimiter(config.maxConcurrency);
+  const maxRetries = config.maxRetries ?? LLM.MAX_RETRIES;
+  if (!Number.isInteger(maxRetries) || maxRetries < 0) {
+    throw new RangeError(`maxRetries must be a non-negative integer, got ${String(config.maxRetries)}`);
+  }
 
   return {
     chat: (messages: readonly ChatMessage[], options: ChatOptions = {}) =>
@@ -77,7 +88,14 @@ export function createOpenAiCompatibleLlm(
             if (classified.kind === "daily-quota") {
               throw new QuotaExhaustedError(config.model, classified.retryAfterMs);
             }
-            if (classified.kind === "fatal" || attempt >= LLM.MAX_RETRIES) throw error;
+            // The request never left the machine, so there is no status and nothing the provider did.
+            // Retried like any other transient, but once the budget is gone it is raised as a STALL, not
+            // as this node's failure: the consumer must not count a dead network against the node
+            // (docs/conflicts.md C94).
+            if (classified.kind === "network" && attempt >= maxRetries) {
+              throw new TransportUnavailableError(config.model, classified.detail);
+            }
+            if (classified.kind === "fatal" || attempt >= maxRetries) throw error;
             // A server-supplied retry-after is honoured in full: capping it would retry before the window
             // it names has passed, spending a request to be told the same thing. RETRY_MAX_MS bounds only
             // our own guess. Anything longer than DAILY_QUOTA_RETRY_AFTER_MS was classified daily above.

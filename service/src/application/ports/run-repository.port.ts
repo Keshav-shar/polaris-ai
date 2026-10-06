@@ -8,4 +8,8 @@ export type RunRepositoryPort = {
   countActive(): Promise<number>;
   setStatus(runId: string, status: RunStatus, haltReason?: string): Promise<void>;
   get(runId: string): Promise<Run | undefined>;
+  // Recent runs, newest first, for the UI's Codex. In Phase 12 this is one indexed `order by created_at
+  // desc limit $1`; in memory it is insertion order reversed, which is the same thing for a single
+  // process. Bounded by `limit` so a long-lived process cannot return an unbounded list.
+  list(limit: number): Promise<Run[]>;
 };

@@ -2,10 +2,12 @@ import type { ErrorRequestHandler, RequestHandler, Response } from "express";
 import { ZodError } from "zod";
 import { HTTP_RETRY_AFTER } from "../../../config/constants";
 import { EnvError } from "../../../config/env";
+import { NodeNotFoundError } from "../../../domain/errors/node-not-found.error";
 import { QuotaExhaustedError } from "../../../domain/errors/quota-exhausted.error";
 import { RunInProgressError } from "../../../domain/errors/run-in-progress.error";
 import { RunNotFoundError } from "../../../domain/errors/run-not-found.error";
 import { StructuredOutputError } from "../../../domain/errors/structured-output.error";
+import { TransportUnavailableError } from "../../../domain/errors/transport-unavailable.error";
 import type { ApiError } from "../../../domain/schemas/api.schema";
 import type { Logger } from "../../../shared/logger";
 
@@ -56,6 +58,10 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
       res.status(404).json(apiError("run_not_found", err.message));
       return;
     }
+    if (err instanceof NodeNotFoundError) {
+      res.status(404).json(apiError("node_not_found", err.message));
+      return;
+    }
     // Both 429s are refusals to spend LLM quota, not failures - the caller retries and gets a real answer.
     if (err instanceof RunInProgressError) {
       retryAfter(res, HTTP_RETRY_AFTER.RUN_IN_PROGRESS_SECONDS);
@@ -69,6 +75,20 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
         err.retryAfterMs === undefined ? HTTP_RETRY_AFTER.QUOTA_FALLBACK_SECONDS : err.retryAfterMs / 1000,
       );
       res.status(429).json(apiError("quota_exhausted", err.message));
+      return;
+    }
+    // The request never reached the provider, so nothing about it is the caller's fault and nothing is
+    // wrong with this service either: it is unavailable for as long as the network is, and the caller
+    // should try again shortly. POST /api/trees reaches this through the parser call it makes in-request.
+    if (err instanceof TransportUnavailableError) {
+      logger.error("LLM provider unreachable", { method: req.method, path: req.path, err });
+      retryAfter(res, HTTP_RETRY_AFTER.TRANSPORT_SECONDS);
+      // The DIAGNOSIS stays in the log, like StructuredOutputError's raw output: `detail` is a provider
+      // string, and a provider that echoes the request could echo its key with it. The caller only needs
+      // to know it is upstream and worth retrying.
+      res.status(503).json(
+        apiError("transport_unavailable", "Cannot reach the language model provider; retry shortly"),
+      );
       return;
     }
     // The model answered, just not with usable JSON: an upstream failure, so 502 rather than 500.

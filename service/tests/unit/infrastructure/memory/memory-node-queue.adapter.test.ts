@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { rootConstructMessage } from "../../../../src/application/tree/messages";
 import { QUEUE } from "../../../../src/config/constants";
 import { createMemoryNodeQueue } from "../../../../src/infrastructure/memory/memory-node-queue.adapter";
+import { fakeClock, fakeScheduler } from "../../../fixtures/fake-clock";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const message = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2 });
@@ -72,6 +73,75 @@ describe("memory node queue", () => {
     }));
     await queue.sendBatch(many);
     expect(queue.size()).toBe(many.length);
+  });
+
+  describe("delayed release (C94)", () => {
+    function delayed() {
+      const clock = fakeClock(1_000);
+      const timers = fakeScheduler(clock);
+      const queue = createMemoryNodeQueue({ now: clock.now, schedule: timers.schedule });
+      return { queue, clock, timers };
+    }
+
+    it("hides a released message for the delay, then hands it back", async () => {
+      const { queue, timers } = delayed();
+      await queue.send(message);
+      const [receipt] = await queue.receive(1);
+      await queue.release(receipt!.receiptId, { countReceive: false, delayMs: 15_000 });
+
+      // Still queued - a stalled message is not lost - but not deliverable yet.
+      expect(queue.size()).toBe(1);
+      expect(await queue.receive(1)).toHaveLength(0);
+      timers.advance(14_999);
+      expect(await queue.receive(1)).toHaveLength(0);
+      timers.advance(1);
+      expect(await queue.receive(1)).toHaveLength(1);
+    });
+
+    it("counts the stall on the message, which is what bounds the tolerance", async () => {
+      const { queue, timers } = delayed();
+      await queue.send(message);
+      for (let i = 0; i < 3; i++) {
+        const [receipt] = await queue.receive(1);
+        // Never pushed towards the DLQ, and the stall is remembered instead.
+        expect(receipt?.receiveCount).toBe(1);
+        expect(receipt?.stallCount).toBe(i);
+        await queue.release(receipt!.receiptId, { countReceive: false, delayMs: 100 });
+        timers.advance(100);
+      }
+      const [last] = await queue.receive(1);
+      expect(last?.stallCount).toBe(3);
+    });
+
+    it("wakes a parked consumer when the delay expires, not only on the next send", async () => {
+      const { queue, timers } = delayed();
+      await queue.send(message);
+      const [receipt] = await queue.receive(1);
+      await queue.release(receipt!.receiptId, { countReceive: false, delayMs: 5_000 });
+
+      let woke = false;
+      const parked = queue.waitForMessage().then(() => {
+        woke = true;
+      });
+      await Promise.resolve();
+      expect(woke).toBe(false);
+      timers.advance(5_000);
+      await parked;
+      expect(woke).toBe(true);
+    });
+
+    it("lets a due message overtake one that is still hidden, rather than blocking the queue", async () => {
+      const { queue, timers } = delayed();
+      await queue.send(message);
+      const [stalled] = await queue.receive(1);
+      await queue.release(stalled!.receiptId, { countReceive: false, delayMs: 10_000 });
+      const other = { ...message, nodeId: "44444444-4444-4444-8444-444444444444" };
+      await queue.send(other);
+
+      expect((await queue.receive(1))[0]?.message.nodeId).toBe(other.nodeId);
+      timers.advance(10_000);
+      expect((await queue.receive(1))[0]?.message.nodeId).toBe(message.nodeId);
+    });
   });
 
   it("rejects a message that violates the contract, because the queue is the trust boundary", async () => {

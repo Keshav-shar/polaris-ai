@@ -14,9 +14,10 @@ All written in Phase 2 (schema first):
 - `api.schema.ts` — `HealthResponse`, `ApiError`, `TreeRequestBody` (`prompt`, plus an optional `maxDepth` cap added in Phase 7 — it only ever lowers cost; the hard ceiling stays `MAX_NODES_PER_RUN`, which no request can raise; C62), `RunIdParams` (Phase 7), `StartTreeResponse`, `TreeResponse` (re-exports `RunStatus`)
 - `run.schema.ts` — `RunStatus` (incl. `halted`), `Run {runId, topic, maxDepth, status, haltReason?}`: the durable run record (Phase 6, C52; `halted` added in 6.1, C55)
 - `agent-io.schema.ts` — `RawParserOutput`, `ConsolidatorOutput` (Phase 5, C46)
-- `evidence.schema.ts` — `EvidenceItem {url, title, snippet, credibility}` (used from Phase 9)
-- `article.schema.ts` — `ArticleContext` (no children field), `ArticleOutput` (≤ 100 words), `Article` (used from Phase 10)
-- `quiz.schema.ts` — `QuizQuestion`, `QuizOutput` (length === `QUIZ_CONFIG.QUESTIONS_PER_TOPIC`), `Quiz` (used from Phase 11)
+- `url.schema.ts` — `HttpUrl`: `z.url()` restricted to http(s). Every field that becomes a clickable `href` uses it, because the WHATWG parser `z.url()` validates with accepts `javascript:alert(1)` as well-formed, and these urls come from a search provider through a model (C95)
+- `evidence.schema.ts` — `EvidenceItem {url: HttpUrl, title, snippet, credibility}` (used from Phase 9)
+- `article.schema.ts` — `ArticleContext` (children as `{topic}` only, each a strictObject so a child's brief, article or own children cannot be smuggled in - C86 as amended by C91), `ArticleOutput` (capped by the `ARTICLE.MAX_WORDS` guard, not a target - C85), `Article`, `WriterOutput` (used from Phase 10)
+- `quiz.schema.ts` — `QuizQuestion`, `QuizOutput` (length === `QUIZ_CONFIG.QUESTIONS_PER_TOPIC`), `Quiz` (used from Phase 10, C74)
 
 **Design notes:**
 - Every later phase consumes these; a contract change is a logged deviation.

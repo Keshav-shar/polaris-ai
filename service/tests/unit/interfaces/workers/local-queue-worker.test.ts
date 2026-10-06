@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { rootConstructMessage } from "../../../../src/application/tree/messages";
 import { QUEUE } from "../../../../src/config/constants";
 import { QuotaExhaustedError } from "../../../../src/domain/errors/quota-exhausted.error";
+import { TransportUnavailableError } from "../../../../src/domain/errors/transport-unavailable.error";
 import type { NodeMessage } from "../../../../src/domain/schemas/queue-message.schema";
 import { createMemoryNodeQueue } from "../../../../src/infrastructure/memory/memory-node-queue.adapter";
 import { createLocalQueueWorker } from "../../../../src/interfaces/workers/local-queue-worker";
+import { fakeClock, fakeScheduler } from "../../../fixtures/fake-clock";
 import { fakeLogger } from "../../../fixtures/fake-generate";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -24,6 +26,24 @@ function setup(handle: (m: NodeMessage) => Promise<void>, concurrency = 2) {
     onFatal: (error) => void fatals.push(error),
   });
   return { queue, worker, deadLettered, fatals, warnings };
+}
+
+// Same wiring, with the clock and the redelivery timer injected: a stall hides the message for
+// QUEUE.STALL_DELAY_MS, and a test must be able to cross that without waiting 15 real seconds.
+function setupStalling(handle: (m: NodeMessage) => Promise<void>) {
+  const clock = fakeClock(1_000);
+  const timers = fakeScheduler(clock);
+  const queue = createMemoryNodeQueue({ now: clock.now, schedule: timers.schedule });
+  const { logger, warnings } = fakeLogger();
+  const deadLettered: NodeMessage[] = [];
+  const worker = createLocalQueueWorker({
+    queue,
+    handle,
+    onDeadLetter: async (m) => void deadLettered.push(m),
+    concurrency: 1,
+    logger: { ...logger, error: (msg, context) => void warnings.push({ msg, context }) },
+  });
+  return { queue, worker, deadLettered, warnings, timers };
 }
 
 describe("local queue worker", () => {
@@ -51,6 +71,75 @@ describe("local queue worker", () => {
     expect(attempts).toBe(QUEUE.MAX_RECEIVES);
     expect(deadLettered).toHaveLength(0);
     expect(queue.size()).toBe(0);
+  });
+
+  describe("an unreachable provider is a stall, not the node's failure (C94)", () => {
+    // idle() deliberately does NOT resolve while a stalled message waits - it is pending work, and the
+    // smoke script's fixpoint depends on that - so these tests wait on the observable effect instead.
+    it("returns the node to the queue without counting a receive, after a delay", async () => {
+      let attempts = 0;
+      const { queue, worker, deadLettered, warnings, timers } = setupStalling(async () => {
+        attempts += 1;
+        if (attempts === 1) throw new TransportUnavailableError("pool", "Connection error. (ECONNRESET)");
+      });
+      await queue.send(message);
+      worker.start();
+      await vi.waitFor(() =>
+        expect(warnings.map((w) => w.msg)).toContain("provider unreachable: node returned to the queue"),
+      );
+
+      // Nothing counted against the node and nothing lost: it is simply hidden for now.
+      expect(attempts).toBe(1);
+      expect(deadLettered).toHaveLength(0);
+      expect(queue.size()).toBe(1);
+
+      timers.advance(QUEUE.STALL_DELAY_MS);
+      await vi.waitFor(() => expect(attempts).toBe(2));
+      await worker.idle();
+      await worker.stop();
+      // The blip cleared, and the node was written on the very next delivery.
+      expect(queue.size()).toBe(0);
+      expect(deadLettered).toHaveLength(0);
+    });
+
+    it("stops giving free attempts after STALL_MAX_RELEASES, so a dead network still ends the run", async () => {
+      let attempts = 0;
+      const { queue, worker, deadLettered, timers } = setupStalling(async () => {
+        attempts += 1;
+        throw new TransportUnavailableError("pool", "Connection error. (ENOTFOUND)");
+      });
+      await queue.send(message);
+      worker.start();
+      // Each free attempt is followed by its delay; after the budget the counted path needs no timer.
+      for (let i = 0; i < QUEUE.STALL_MAX_RELEASES; i++) {
+        await vi.waitFor(() => expect(attempts).toBe(i + 1));
+        timers.advance(QUEUE.STALL_DELAY_MS);
+      }
+      await vi.waitFor(() => expect(deadLettered).toHaveLength(1));
+      await worker.stop();
+
+      // STALL_MAX_RELEASES free attempts, then MAX_RECEIVES counted ones, then the dead-letter queue.
+      expect(attempts).toBe(QUEUE.STALL_MAX_RELEASES + QUEUE.MAX_RECEIVES);
+      expect(queue.size()).toBe(0);
+    });
+
+    it("keeps the worker running: a network fault is not a halt", async () => {
+      const seen: string[] = [];
+      const { queue, worker } = setupStalling(async (m) => {
+        seen.push(m.nodeId);
+        throw new TransportUnavailableError("pool", "Connection error.");
+      });
+      await queue.send(message);
+      worker.start();
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+
+      // The next message is picked up at once, with no timer advanced: unlike a quota halt, the worker
+      // is still draining.
+      const other = { ...message, nodeId: "55555555-5555-4555-8555-555555555555" };
+      await queue.send(other);
+      await vi.waitFor(() => expect(seen).toContain(other.nodeId));
+      await worker.stop();
+    });
   });
 
   it("dead-letters after QUEUE.MAX_RECEIVES failures and stops redelivering", async () => {

@@ -7,7 +7,7 @@ import {
 import { createMemoryExpansionCache } from "../../../../src/infrastructure/memory/memory-expansion-cache.store";
 
 const base: ExpansionCacheKeyParts = {
-  model: "gemini-3.6-flash",
+  namespace: "gemini-3.6-flash",
   position: "normal",
   topic: "photosynthesis",
   ancestorTopics: ["biology", "plant cells"],
@@ -26,7 +26,7 @@ describe("expansionCacheKey", () => {
   });
 
   it("changes with the model, so switching provider profile namespaces the cache", () => {
-    expect(expansionCacheKey({ ...base, model: "llama-3.3-70b" })).not.toBe(expansionCacheKey(base));
+    expect(expansionCacheKey({ ...base, namespace: "llama-3.3-70b" })).not.toBe(expansionCacheKey(base));
   });
 
   it("changes with the layer position and the ancestor trail", () => {
@@ -46,11 +46,11 @@ describe("expansionCacheKey", () => {
 });
 
 describe("createExpansionCacheDep", () => {
-  it("follows a model that changes mid-run, so a failover starts a new namespace", () => {
-    // A fixed string would keep filing the fallback provider's answers under the exhausted provider's
-    // key, mixing two models' children in one tree (docs/conflicts.md C59).
-    let model = "gemini";
-    const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), model: () => model });
+  it("follows a namespace that changes mid-run, rather than capturing it once", () => {
+    // A fixed string would keep filing answers under a namespace the stack has already moved off,
+    // mixing two models' children in one tree (docs/conflicts.md C69).
+    let model = "model-a";
+    const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: () => model });
     const context = { depth: 1, maxDepth: 3, position: "normal" as const, ancestors: [] };
     const request = { topic: "Photosynthesis", context };
     const before = dep.keyFor(request);
@@ -59,14 +59,14 @@ describe("createExpansionCacheDep", () => {
   });
 
   it("keys on the context's position and ancestor topics, not their briefs", () => {
-    const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), model: "m" });
+    const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" });
     const context = { depth: 1, maxDepth: 3, position: "normal" as const, ancestors: [{ depth: 0, topic: "biology", brief: "one brief" }] };
     const other = { ...context, ancestors: [{ depth: 0, topic: "biology", brief: "a totally different brief" }] };
     expect(dep.keyFor({ topic: "t", context })).toBe(dep.keyFor({ topic: "t", context: other }));
   });
 
   it("round-trips an output through the store", async () => {
-    const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), model: "m" });
+    const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" });
     const output = { brief: "b", children: ["one", "two"] };
     await dep.put("k", output);
     expect(await dep.get("k")).toEqual(output);

@@ -23,5 +23,10 @@ export function createMemoryRunRepository(): RunRepositoryPort {
       const run = runs.get(runId);
       return run === undefined ? undefined : { ...run };
     },
+    async list(limit: number) {
+      // A Map iterates in insertion order, so reversing gives newest first. Copies, never the stored
+      // objects, so a caller cannot mutate the repository through the returned list.
+      return [...runs.values()].reverse().slice(0, Math.max(0, limit)).map((run) => ({ ...run }));
+    },
   };
 }

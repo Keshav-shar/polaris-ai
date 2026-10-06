@@ -4,6 +4,8 @@ import { createContainer } from "../../composition/container";
 import { getEnv } from "../../config/env";
 import { createLogger } from "../../shared/logger";
 import { createApp } from "./app";
+import { createNodesRouter } from "./routes/nodes.routes";
+import { createRunsRouter } from "./routes/runs.routes";
 import { createTreesRouter } from "./routes/trees.routes";
 
 dotenv.config({ quiet: true });
@@ -15,6 +17,8 @@ const llmConfigured = container.llmConfigured;
 
 const api = Router();
 api.use("/trees", createTreesRouter(container));
+api.use("/runs", createRunsRouter(container));
+api.use("/nodes", createNodesRouter(container));
 
 const app = createApp({
   corsOrigin: env.CORS_ORIGIN,

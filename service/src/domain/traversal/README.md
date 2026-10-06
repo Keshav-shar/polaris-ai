@@ -7,6 +7,9 @@
 **Must not depend on:** Agents, LLMs, databases, the graph. Everything here runs with zero I/O.
 
 **Planned contents:**
+- `article-budget.ts` — `articleBudget(writableChildCount)`: the word band an article aims for, derived from
+  how many children the node hands detail down to. The only place article length policy lives, and pure, so
+  the policy can be reasoned about and tested without running a model (Phase 10.1, C85)
 - `layer-position.ts` — `layerPosition(depth, maxDepth)` → `normal` | `taper` | `leaf` (Phase 2)
 - `estimate-expand-calls.ts` — `estimateExpandCalls(maxDepth, branching?)`: expand calls a tree would cost, for the pre-build free-tier warning. Warning only, never a cap (Phase 6.1, C57)
 - `ancestor-window.ts` — `nextAncestors(ancestors, parent)` keeping the last `ANCESTOR_WINDOW` levels (written in Phase 5)

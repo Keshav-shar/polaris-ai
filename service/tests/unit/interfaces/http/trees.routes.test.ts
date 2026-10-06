@@ -148,7 +148,7 @@ describe("POST /api/trees", () => {
     // The accessor itself throws: composition builds the stack lazily so the process can still serve.
     const baseUrl = await serve({
       startTreeBuild: () => {
-        throw new EnvError("LLM is not configured (LLM_PROVIDER=primary). Set LLM_API_KEY in service/.env.");
+        throw new EnvError("LLM is not configured. Set LLM_API_KEY in service/.env (see docs/setup.md).");
       },
     });
     const res = await post(baseUrl, { prompt: "x" });

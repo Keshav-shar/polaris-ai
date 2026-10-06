@@ -94,7 +94,7 @@ describe("createNodeConstructor", () => {
   });
 
   describe("expansion cache", () => {
-    const cached = (cache = createExpansionCacheDep({ cache: createMemoryExpansionCache(), model: "m" })) => {
+    const cached = (cache = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" })) => {
       let expandCalls = 0;
       let consolidateCalls = 0;
       const constructor = createNodeConstructor({
@@ -122,7 +122,7 @@ describe("createNodeConstructor", () => {
     };
 
     it("serves a second identical request without calling the LLM at all", async () => {
-      const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), model: "m" });
+      const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" });
       const first = cached(dep);
       const a = await first.constructor.construct({ topic: "Root", context });
       const second = cached(dep);
@@ -135,7 +135,7 @@ describe("createNodeConstructor", () => {
 
     it("stores the post-consolidation output, so cached children are the trimmed set", async () => {
       const cache = createMemoryExpansionCache();
-      const dep = createExpansionCacheDep({ cache, model: "m" });
+      const dep = createExpansionCacheDep({ cache, namespace: "m" });
       const out = await cached(dep).constructor.construct({ topic: "Root", context });
       expect(out.children).toHaveLength(8);
       // Identical children across runs is what keeps derived child ids stable (idempotency rule 4).
@@ -143,12 +143,42 @@ describe("createNodeConstructor", () => {
       expect((await cache.get(key))?.children).toEqual(out.children);
     });
 
-    it("misses when the model differs, rather than serving another provider's answer", async () => {
+    it("misses when the namespace differs, rather than serving another provider's answer", async () => {
       const cache = createMemoryExpansionCache();
-      await cached(createExpansionCacheDep({ cache, model: "m" })).constructor.construct({ topic: "Root", context });
-      const other = cached(createExpansionCacheDep({ cache, model: "other-model" }));
+      await cached(createExpansionCacheDep({ cache, namespace: "m" })).constructor.construct({ topic: "Root", context });
+      const other = cached(createExpansionCacheDep({ cache, namespace: "other-model" }));
       await other.constructor.construct({ topic: "Root", context });
       expect(other.expandCalls).toBe(1);
+    });
+
+    // The regression that justifies splitting cacheNamespace() from activeModel(). A node that fails and
+    // is redelivered by the queue may be served by a DIFFERENT pool member the second time. Keyed on the
+    // answering model, the retry would miss and pay for a whole second expansion; worse, construct-node
+    // derives the key BEFORE the call and writes with it AFTER, so one member's answer would be filed
+    // under another's key. A pool namespace is constant, so the retry hits.
+    it("still hits the cache when a redelivered node is answered by a different pool member", async () => {
+      const cache = createMemoryExpansionCache();
+      // Rotates between calls, exactly as a pool's activeModel() does.
+      let answeringModel = "member-a";
+      const byPool = createExpansionCacheDep({ cache, namespace: () => "pool:0123456789abcdef" });
+      const byAnsweringModel = createExpansionCacheDep({ cache, namespace: () => answeringModel });
+
+      const keyBefore = byPool.keyFor({ topic: "Root", context });
+      const wrongKeyBefore = byAnsweringModel.keyFor({ topic: "Root", context });
+      const first = cached(byPool);
+      const a = await first.constructor.construct({ topic: "Root", context });
+
+      answeringModel = "member-b";
+
+      // Keyed on whoever answered, the retry would look under a different key and pay again...
+      expect(byAnsweringModel.keyFor({ topic: "Root", context })).not.toBe(wrongKeyBefore);
+      // ...while the pool namespace is stable, so the redelivery hits.
+      expect(byPool.keyFor({ topic: "Root", context })).toBe(keyBefore);
+
+      const retry = cached(byPool);
+      const b = await retry.constructor.construct({ topic: "Root", context });
+      expect(retry.expandCalls).toBe(0);
+      expect(b).toEqual(a);
     });
 
     it("warns but still returns the node when the cache write fails", async () => {

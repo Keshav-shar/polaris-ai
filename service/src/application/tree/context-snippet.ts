@@ -1,7 +1,7 @@
 import { ANCESTOR_WINDOW } from "../../config/constants";
 import type { NodeContext } from "../../domain/schemas/node.schema";
 
-// Text fixed by docs/node-builder-mvp-spec.md. Never states a number of children (EXPAND.MAX_CHILDREN stays hidden).
+// The per-position text (docs/traversal-algorithm.md). Never states a number of children (EXPAND.MAX_CHILDREN stays hidden).
 export function buildContextSnippet(ctx: NodeContext): string {
   const remaining = ctx.maxDepth - ctx.depth;
   const trail = ctx.ancestors.map((a) => a.topic).join(" → ") || "(root)";

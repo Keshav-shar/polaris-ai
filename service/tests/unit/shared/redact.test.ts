@@ -3,7 +3,7 @@ import { redactSecrets } from "../../../src/shared/redact";
 
 describe("redactSecrets", () => {
   it("removes every secret it is given, not just the first", () => {
-    // With failover a single run calls both providers, so either key can come back in an error.
+    // A list, not one value: the scrubbers take every key the process knows about, whatever the count.
     const text = "primary sk-aaa failed, fallback gsk-bbb failed too";
     expect(redactSecrets(text, ["sk-aaa", "gsk-bbb"])).toBe(
       "primary [redacted] failed, fallback [redacted] failed too",

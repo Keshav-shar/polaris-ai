@@ -6,7 +6,10 @@ import type { ExpansionCachePort } from "../ports/expansion-cache.port";
 import type { ExpansionCacheDep } from "./construct-node";
 
 export type ExpansionCacheKeyParts = {
-  model: string;
+  // Identifies the SET of models whose answers may be filed here, NOT the one that answered. Under a
+  // rotating pool the answering model changes per call while this stays constant; see
+  // infrastructure/llm/switchable.ts for why keying on the answering model would file answers wrongly.
+  namespace: string;
   position: LayerPosition;
   topic: string;
   ancestorTopics: readonly string[];
@@ -21,25 +24,27 @@ const SEP = "\u0000";
 export function expansionCacheKey(parts: ExpansionCacheKeyParts): string {
   const ancestors = parts.ancestorTopics.map(normalizeTopic).join(UNIT);
   return sha256Hex(
-    [PROMPT_VERSION, parts.model, parts.position, normalizeTopic(parts.topic), ancestors].join(SEP),
+    [PROMPT_VERSION, parts.namespace, parts.position, normalizeTopic(parts.topic), ancestors].join(SEP),
   );
 }
 
-// Bundles key derivation with the store so construct-node never learns about PROMPT_VERSION or the model.
-// The model is part of the key, so switching provider profile is an automatic namespace change: the new
-// provider starts cold and entries written under the old model stay valid if you switch back.
-// `model` accepts a getter because a failover switches providers MID-RUN: a fixed string would keep
-// filing the fallback's answers under the exhausted provider's namespace (docs/conflicts.md C59).
+// Bundles key derivation with the store so construct-node never learns about PROMPT_VERSION or the
+// namespace. Switching provider PROFILE is an automatic namespace change: the new provider starts cold and
+// entries written under the old one stay valid if you switch back (docs/conflicts.md C59, C93).
+// `namespace` accepts a getter because the answering model can change MID-RUN: a fixed string would keep
+// filing the fallback's answers under the exhausted provider's namespace.
+// It must NOT be the answering model under a rotating pool: construct-node derives the key BEFORE the call
+// and writes with it AFTER, so a per-call model would file one member's answer under another's key.
 export function createExpansionCacheDep(deps: {
   cache: ExpansionCachePort;
-  model: string | (() => string);
+  namespace: string | (() => string);
 }): ExpansionCacheDep {
-  const { model } = deps;
-  const modelNow = typeof model === "function" ? model : () => model;
+  const { namespace } = deps;
+  const namespaceNow = typeof namespace === "function" ? namespace : () => namespace;
   return {
     keyFor: ({ topic, context }: { topic: string; context: NodeContext }) =>
       expansionCacheKey({
-        model: modelNow(),
+        namespace: namespaceNow(),
         position: context.position,
         topic,
         ancestorTopics: context.ancestors.map((a) => a.topic),

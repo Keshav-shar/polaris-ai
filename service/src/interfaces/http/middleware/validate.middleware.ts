@@ -41,3 +41,9 @@ export function validateBody<T extends z.ZodType>(schema: T): Validated<T> {
 export function validateParams<T extends z.ZodType>(schema: T): Validated<T> {
   return validate(schema, (req) => req.params);
 }
+
+export function validateQuery<T extends z.ZodType>(schema: T): Validated<T> {
+  // Express 5 makes req.query a getter too, and every value in it is a string, so the schema does the
+  // coercing (z.coerce) rather than the handler.
+  return validate(schema, (req) => req.query);
+}

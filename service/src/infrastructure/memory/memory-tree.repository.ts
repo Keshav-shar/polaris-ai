@@ -1,5 +1,5 @@
 import type { TerminalStatus } from "../../application/ports/node-state.port";
-import type { TreeRepositoryPort } from "../../application/ports/tree-repository.port";
+import type { StoredNode, TreeRepositoryPort } from "../../application/ports/tree-repository.port";
 import type { TreeNode } from "../../domain/schemas/node.schema";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 
@@ -14,6 +14,8 @@ type NodeRow = {
   path: string;
   brief: string;
   status: RowStatus;
+  articleStatus?: TerminalStatus;
+  articleFailureReason?: string;
 };
 
 // A row only ever moves forward: pending (topic known) -> expanded (brief written) -> done|failed. A
@@ -53,6 +55,33 @@ export function createMemoryTreeRepository(): TreeRepositoryPort {
       if (row !== undefined) row.status = status;
     },
 
+    async setArticleStatus(nodeId: string, status: TerminalStatus, reason?: string) {
+      const row = rows.get(nodeId);
+      if (row === undefined) return;
+      row.articleStatus = status;
+      // Only a failure carries a reason, and a success clears any earlier one: a node that was rewritten
+      // successfully must not keep explaining a failure it no longer has.
+      if (status === "failed") row.articleFailureReason = reason;
+      else delete row.articleFailureReason;
+    },
+
+    async getNode(nodeId: string): Promise<StoredNode | undefined> {
+      const row = rows.get(nodeId);
+      if (row === undefined) return undefined;
+      // Children carry their STATUS, which is the whole point: the article pass must skip failed
+      // construction nodes, and NodeState.completedChildIds cannot tell done from failed.
+      const children = [...rows.values()]
+        .filter((candidate) => candidate.parentId === nodeId)
+        // The brief was always on the row and merely projected away; the writer needs it to signpost.
+        .map((child) => ({
+          nodeId: child.nodeId,
+          topic: child.topic,
+          brief: child.brief,
+          status: child.status,
+        }));
+      return { ...row, children };
+    },
+
     async getTree(runId: string) {
       const byParent = new Map<string | null, NodeRow[]>();
       let root: NodeRow | undefined;
@@ -71,6 +100,10 @@ export function createMemoryTreeRepository(): TreeRepositoryPort {
         depth: row.depth,
         brief: row.brief,
         status: row.status,
+        ...(row.articleStatus === undefined ? {} : { articleStatus: row.articleStatus }),
+        ...(row.articleFailureReason === undefined
+          ? {}
+          : { articleFailureReason: row.articleFailureReason }),
         children: (byParent.get(row.nodeId) ?? []).map(build),
       });
       return build(root);

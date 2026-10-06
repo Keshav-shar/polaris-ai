@@ -69,10 +69,12 @@ describe("LLM configuration", () => {
 
   it("requireLlmEnv returns the typed config", () => {
     expect(requireLlmEnv(parseEnv(llm))).toEqual({
-      provider: "primary",
       baseUrl: llm.LLM_BASE_URL,
       apiKey: llm.LLM_API_KEY,
       model: llm.LLM_MODEL,
+      // Always a pool, even with no LLM_MODELS: the lead alone, so every downstream reader has one shape.
+      models: [{ id: llm.LLM_MODEL, dailyRequestBudget: undefined }],
+      rotation: "round-robin",
       jsonMode: true,
       maxConcurrency: 4,
       temperature: undefined,
@@ -84,29 +86,87 @@ describe("LLM configuration", () => {
     });
   });
 
-  it("selects the fallback profile and requires only its variables", () => {
-    const fallback = {
-      LLM_FALLBACK_BASE_URL: "https://api.groq.com/openai/v1",
-      LLM_FALLBACK_API_KEY: "fk",
-      LLM_FALLBACK_MODEL: "llama-3.3-70b-versatile",
-    };
-    // The inactive profile is never required: a Gemini-only .env still parses.
-    expect(parseEnv({ ...llm }).LLM_PROVIDER).toBe("primary");
-    expect(isLlmConfigured(parseEnv({ ...fallback, LLM_PROVIDER: "fallback" }))).toBe(true);
-    expect(requireLlmEnv(parseEnv({ ...llm, ...fallback, LLM_PROVIDER: "fallback" }))).toMatchObject({
-      provider: "fallback",
-      baseUrl: fallback.LLM_FALLBACK_BASE_URL,
-      model: fallback.LLM_FALLBACK_MODEL,
+  describe("model pool (LLM_MODELS)", () => {
+    it("puts the lead first and keeps the configured order", () => {
+      const env = requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: "b-model,c-model" }));
+      expect(env.models.map((m) => m.id)).toEqual([llm.LLM_MODEL, "b-model", "c-model"]);
+      expect(env.model).toBe(env.models[0].id);
+    });
+
+    it("parses an entry's own requests/day and tolerates surrounding whitespace", () => {
+      const env = requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: " b-model=1000 , c-model " }));
+      expect(env.models).toEqual([
+        { id: llm.LLM_MODEL, dailyRequestBudget: undefined },
+        { id: "b-model", dailyRequestBudget: 1000 },
+        { id: "c-model", dailyRequestBudget: undefined },
+      ]);
+    });
+
+    it("keeps a model id containing '=' by splitting on the LAST one", () => {
+      const env = requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: "vendor/a=b=250" }));
+      expect(env.models[1]).toEqual({ id: "vendor/a=b", dailyRequestBudget: 250 });
+    });
+
+    it("dedupes a repeat of the lead or of another member, first occurrence winning", () => {
+      const env = requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: `b,${llm.LLM_MODEL},b` }));
+      expect(env.models.map((m) => m.id)).toEqual([llm.LLM_MODEL, "b"]);
+    });
+
+    it("rejects a malformed budget rather than silently disabling proactive retirement", () => {
+      expect(() => requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: "b=nope" }))).toThrow(/LLM_MODELS/);
+      expect(() => requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: "b=0" }))).toThrow(EnvError);
+    });
+
+    it("sums every member's budget, and reports undefined when ANY member's is unknown", () => {
+      const withAll = requireLlmEnv(
+        parseEnv({ ...llm, LLM_DAILY_REQUEST_BUDGET: "250", LLM_MODELS: "b=1000,c=1000" }),
+      );
+      expect(withAll.dailyRequestBudget).toBe(2250);
+      const withGap = requireLlmEnv(
+        parseEnv({ ...llm, LLM_DAILY_REQUEST_BUDGET: "250", LLM_MODELS: "b=1000,c" }),
+      );
+      expect(withGap.dailyRequestBudget).toBeUndefined();
+    });
+
+    it("leaves writerModels undefined unless LLM_WRITER_MODELS is set, and never adds the lead to it", () => {
+      expect(requireLlmEnv(parseEnv(llm)).writerModels).toBeUndefined();
+      const withWriter = requireLlmEnv(parseEnv({ ...llm, LLM_WRITER_MODELS: "big-a=500,big-b" }));
+      // The construction lead is deliberately absent: the list exists to EXCLUDE models that expand
+      // fine but cannot emit a scope-sized article (C92).
+      expect(withWriter.writerModels).toEqual([
+        { id: "big-a", dailyRequestBudget: 500 },
+        { id: "big-b", dailyRequestBudget: undefined },
+      ]);
+      expect(withWriter.models[0]!.id).toBe(llm.LLM_MODEL);
+    });
+
+    it("defaults rotation to round-robin and rejects an unknown policy", () => {
+      // The binding limit on Groq is per-minute and per-model. throttle only lifts it AFTER a 429;
+      // round-robin spreads the load before one is hit, so it is the default (C92).
+      expect(requireLlmEnv(parseEnv(llm)).rotation).toBe("round-robin");
+      expect(requireLlmEnv(parseEnv({ ...llm, LLM_MODEL_ROTATION: "throttle" })).rotation).toBe("throttle");
+      expect(requireLlmEnv(parseEnv({ ...llm, LLM_MODEL_ROTATION: "exhaustion" })).rotation).toBe("exhaustion");
+      expect(() => parseEnv({ ...llm, LLM_MODEL_ROTATION: "sometimes" })).toThrow(EnvError);
     });
   });
 
-  it("rejects LLM_PROVIDER=fallback without the fallback variables", () => {
+  it("refuses to start when .env still sets a variable removed with the second provider", () => {
+    // THE guard that makes the C93 migration safe: the live Groq key used to sit in
+    // LLM_FALLBACK_API_KEY, so silently ignoring these would start the process against the empty
+    // LLM_* names - or against a leftover key for a provider that is no longer wanted.
     expect(() => parseEnv({ ...llm, LLM_PROVIDER: "fallback" })).toThrow(EnvError);
-    expect(() => parseEnv({ ...llm, LLM_PROVIDER: "fallback" })).toThrow(/LLM_FALLBACK_BASE_URL/);
+    expect(() => parseEnv({ ...llm, LLM_FALLBACK_API_KEY: "gsk-live" })).toThrow(
+      /LLM_FALLBACK_API_KEY: move its value to LLM_API_KEY/,
+    );
+    expect(() => parseEnv({ ...llm, LLM_FALLBACK_MODELS: "a,b" })).toThrow(/move its value to LLM_MODELS/);
+    // An emptied-out line carries nothing to migrate, so it is not worth refusing to boot over.
+    expect(() => parseEnv({ ...llm, LLM_FALLBACK_API_KEY: "", LLM_PROVIDER: "" })).not.toThrow();
   });
 
-  it("names the ACTIVE profile's variables when they are missing", () => {
-    expect(() => requireLlmEnv(parseEnv({ LLM_API_KEY: "k" }))).toThrow(/LLM_PROVIDER=primary/);
+  it("names the missing variables when the LLM is not configured", () => {
+    expect(() => requireLlmEnv(parseEnv({ LLM_API_KEY: "k" }))).toThrow(
+      /LLM is not configured. Set LLM_BASE_URL, LLM_MODEL/,
+    );
   });
 
   it("defaults the worker concurrency to WORKER.EXPAND_CONCURRENCY", () => {
@@ -125,40 +185,11 @@ describe("LLM configuration", () => {
     expect(() => parseEnv({ LLM_DAILY_REQUEST_BUDGET: "many" })).toThrow(EnvError);
   });
 
-  it("gives each profile its OWN daily budget", () => {
-    // Gemini's 20/day and Groq's ceiling differ by orders of magnitude; one shared number would warn
-    // against the wrong one the moment LLM_PROVIDER changed (docs/conflicts.md C58).
-    const env = parseEnv({
-      ...llm,
-      LLM_DAILY_REQUEST_BUDGET: "20",
-      LLM_FALLBACK_BASE_URL: "https://api.groq.com/openai/v1",
-      LLM_FALLBACK_API_KEY: "groq-key",
-      LLM_FALLBACK_MODEL: "groq-model",
-      LLM_FALLBACK_DAILY_REQUEST_BUDGET: "1000",
-    });
-    expect(requireLlmEnv(env, "primary").dailyRequestBudget).toBe(20);
-    expect(requireLlmEnv(env, "fallback").dailyRequestBudget).toBe(1000);
-    // Defaults to the profile LLM_PROVIDER selects.
-    expect(requireLlmEnv(env).dailyRequestBudget).toBe(20);
-  });
-
-  it("can inspect the INACTIVE profile, which is what failover needs", () => {
-    const env = parseEnv({
-      ...llm,
-      LLM_FALLBACK_BASE_URL: "https://api.groq.com/openai/v1",
-      LLM_FALLBACK_API_KEY: "groq-key",
-      LLM_FALLBACK_MODEL: "groq-model",
-    });
-    expect(env.LLM_PROVIDER).toBe("primary");
-    expect(isLlmConfigured(env, "fallback")).toBe(true);
-    expect(requireLlmEnv(env, "fallback").model).toBe("groq-model");
-    // And reports the profile it was asked about, not the globally active one.
-    expect(requireLlmEnv(env, "fallback").provider).toBe("fallback");
-  });
-
-  it("names the profile it was asked about when that profile is incomplete", () => {
-    expect(() => requireLlmEnv(parseEnv({ ...llm }), "fallback")).toThrow(/LLM_PROVIDER=fallback/);
-    expect(() => requireLlmEnv(parseEnv({ ...llm }), "fallback")).toThrow(/LLM_FALLBACK_BASE_URL/);
+  it("gives the lead's budget to the lead, and sums the pool", () => {
+    // One account now (C93), so the only budget question left is how the members add up.
+    const env = parseEnv({ ...llm, LLM_DAILY_REQUEST_BUDGET: "1000", LLM_MODELS: "b=1000,c=1000" });
+    expect(requireLlmEnv(env).dailyRequestBudget).toBe(3000);
+    expect(requireLlmEnv(parseEnv({ ...llm, LLM_DAILY_REQUEST_BUDGET: "1000" })).dailyRequestBudget).toBe(1000);
   });
 
   it("defaults MAX_NODES_PER_RUN to the constant and rejects a meaningless cap", () => {

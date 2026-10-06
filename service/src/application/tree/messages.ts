@@ -22,6 +22,18 @@ export function rootConstructMessage(runId: string, parsed: ParsedRequest): Node
   };
 }
 
+// The article pass reuses the construct message wholesale: same nodeId, same path, same ancestors - only
+// the queue and the `pass` differ. That matters for idempotency rule 4, because the article message for a
+// node MUST carry the same deterministic id construction gave it, or the two passes would disagree about
+// which node they are talking about.
+//
+// Since C91 this is the ONLY way an article message is made: the node that has just been expanded sends
+// its own, so the ancestor window it is holding is exactly the parent context the writer needs and no
+// message has to be rebuilt from stored state.
+export function toArticleMessage(message: NodeMessage): NodeMessage {
+  return { ...message, pass: "article" };
+}
+
 // The child's id is derived from (runId, parentId, normalized topic), so a redelivered parent produces the
 // same children (idempotency rule 4). nextAncestors keeps the window at ANCESTOR_WINDOW, which is what
 // makes "ancestors <= 2 in every message" true by construction rather than by assertion.

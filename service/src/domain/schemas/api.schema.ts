@@ -1,6 +1,8 @@
 import { z } from "zod";
-import { MAX_DEPTH_CEILING } from "../../config/constants";
+import { MAX_DEPTH_CEILING, RUNS_LIST_LIMIT } from "../../config/constants";
+import { Article } from "./article.schema";
 import { TreeNode } from "./node.schema";
+import { Quiz } from "./quiz.schema";
 import { RunStatus } from "./run.schema";
 
 export const HealthResponse = z.object({
@@ -39,6 +41,51 @@ export type RunIdParams = z.infer<typeof RunIdParams>;
 
 // Re-exported so the UI contract keeps a single import site; defined in run.schema.ts with the Run record.
 export { RunStatus };
+
+// GET /api/runs. The Codex lists every run's scrolls, so it needs the runs before it can fetch trees.
+// Capped by RUNS_LIST_LIMIT: an unbounded list would grow with the process.
+export const RunsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(RUNS_LIST_LIMIT).default(RUNS_LIST_LIMIT),
+});
+export type RunsQuery = z.infer<typeof RunsQuery>;
+
+export const RunSummary = z.object({
+  runId: z.uuid(),
+  topic: z.string(),
+  maxDepth: z.number().int().min(1).max(MAX_DEPTH_CEILING),
+  status: RunStatus,
+  haltReason: z.string().optional(),
+});
+export type RunSummary = z.infer<typeof RunSummary>;
+
+export const RunsResponse = z.object({ runs: z.array(RunSummary) });
+export type RunsResponse = z.infer<typeof RunsResponse>;
+
+// GET /api/nodes/:nodeId. One call for the reader: the node, its place in the tree, its article and its
+// questions. Phase 9's reader had to list runs and walk each tree to find a node, because this did not
+// exist yet.
+export const NodeIdParams = z.object({ nodeId: z.uuid() });
+export type NodeIdParams = z.infer<typeof NodeIdParams>;
+
+export const NodeResponse = z.object({
+  node: z.object({
+    id: z.uuid(),
+    runId: z.uuid(),
+    topic: z.string(),
+    depth: z.number().int().min(0),
+    brief: z.string(),
+    parent: z.object({ id: z.uuid(), topic: z.string() }).nullable(),
+    children: z.array(z.object({ id: z.uuid(), topic: z.string() })),
+  }),
+  // null until the article pass reaches this node; the UI says "not yet written" rather than spinning.
+  article: Article.nullable(),
+  // Present only when the article will NEVER arrive, so the reader can distinguish a scroll still being
+  // written from one that failed - both used to render as "not yet written".
+  articleFailureReason: z.string().optional(),
+  // null when the node has no quiz, which is legitimate: questions need evidence to cite (C80).
+  quiz: Quiz.nullable(),
+});
+export type NodeResponse = z.infer<typeof NodeResponse>;
 
 export const TreeResponse = z.object({
   run: z.object({

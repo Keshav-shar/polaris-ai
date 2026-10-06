@@ -1,0 +1,129 @@
+@import "tailwindcss";
+
+/* Tailwind v4 is CSS-first: the palette below is the `tailwind.config` object from ui/uireference.html
+   translated into `@theme`, which is what generates `bg-astral-900`, `text-astral-gold`,
+   `shadow-gold-glow` and the rest. There is no tailwind.config.js. */
+@theme {
+  --color-astral-950: #070913;
+  --color-astral-900: #0b0f1e;
+  --color-astral-800: #13192e;
+  --color-astral-700: #1c2541;
+  --color-astral-600: #2a365c;
+  --color-astral-500: #3b4b7c;
+  --color-astral-gold: #d4af37;
+  --color-astral-goldglow: #ffd700;
+  --color-astral-amber: #f59e0b;
+  --color-astral-blue: #38bdf8;
+  --color-astral-violet: #a855f7;
+  --color-astral-starlight: #e0f2fe;
+
+  --font-serif: "Cinzel", Georgia, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-code: "Fira Code", ui-monospace, monospace;
+
+  --shadow-gold-glow: 0 0 25px rgba(212, 175, 55, 0.25);
+  --shadow-torch-glow: 0 0 30px rgba(245, 158, 11, 0.3);
+  --shadow-starlight-glow: 0 0 20px rgba(56, 189, 248, 0.3);
+}
+
+/* The astral theme is dark by construction, so there is no light variant to follow the OS. Declaring the
+   scheme keeps form controls and scrollbars dark instead of the browser's light defaults. */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-astral-950);
+  color: var(--color-astral-starlight);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-astral-900);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-astral-600);
+  border-radius: 3px;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-astral-gold);
+}
+
+/* Focus must stay visible: the reference has no focus styling at all, and a gold-on-navy UI hides the
+   browser default almost completely. */
+:focus-visible {
+  outline: 2px solid var(--color-astral-gold);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Mythic arch / stained-glass border, from the reference. */
+.arch-border {
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  position: relative;
+}
+.arch-border::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.mystic-panel {
+  background: rgba(11, 15, 30, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+@keyframes orbitRotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.animate-orbit-slow {
+  animation: orbitRotate 120s linear infinite;
+}
+.animate-orbit-reverse {
+  animation: orbitRotate 90s linear infinite reverse;
+}
+
+@keyframes torchFlicker {
+  0%,
+  100% {
+    opacity: 0.9;
+    filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.6));
+  }
+  50% {
+    opacity: 0.75;
+    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4));
+  }
+  75% {
+    opacity: 1;
+    filter: drop-shadow(0 0 16px rgba(251, 191, 36, 0.8));
+  }
+}
+.torch-glow {
+  animation: torchFlicker 3s ease-in-out infinite;
+}
+
+/* Every decorative animation stops for a viewer who asked for less motion. The reference animates orbits,
+   torches and a starfield continuously, which is exactly what this setting exists for. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-orbit-slow,
+  .animate-orbit-reverse,
+  .torch-glow,
+  .animate-pulse,
+  .animate-ping {
+    animation: none !important;
+  }
+}

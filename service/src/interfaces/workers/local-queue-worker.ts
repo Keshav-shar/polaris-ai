@@ -1,13 +1,16 @@
 import type { NodeQueueConsumerPort, QueueReceipt } from "../../application/ports/node-queue.port";
 import { QUEUE } from "../../config/constants";
 import { QuotaExhaustedError } from "../../domain/errors/quota-exhausted.error";
+import { TransportUnavailableError } from "../../domain/errors/transport-unavailable.error";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 import type { Logger } from "../../shared/logger";
 
 export type LocalQueueWorkerDeps = {
   queue: NodeQueueConsumerPort;
   handle(message: NodeMessage): Promise<void>;
-  onDeadLetter(message: NodeMessage): Promise<void>;
+  // Carries the error of the LAST failed attempt: without it the dead-letter path can record THAT a
+  // node failed but not WHY, leaving the cause only in this worker's stdout.
+  onDeadLetter(message: NodeMessage, error: unknown): Promise<void>;
   // W_expand: the cap on in-flight LLM work, independent of how wide any tree layer is.
   concurrency: number;
   logger: Pick<Logger, "warn" | "error">;
@@ -21,6 +24,10 @@ export type LocalQueueWorker = {
   // Resolves when the queue is empty and nothing is in flight. The deterministic hook for tests and the
   // smoke script - no polling, no fixed waits.
   idle(): Promise<void>;
+  // The same predicate, answered NOW. With two passes running at once (C91), one worker going idle
+  // proves nothing - construction can still be feeding the article queue - so a caller draining both
+  // needs to ask whether they are idle at the same instant, which awaiting cannot tell it.
+  isIdle(): boolean;
   stop(): Promise<void>;
 };
 
@@ -91,9 +98,27 @@ export function createLocalQueueWorker({
         await halt(error, receipt.message);
         return;
       }
+      // A stall, not a failure, and unlike a daily quota it clears on its own - so the worker keeps
+      // running and the node keeps its attempts. Bounded by STALL_MAX_RELEASES: a network that never
+      // comes back must still end the run rather than cycle in it, so past the budget this falls through
+      // to the counted path below and dead-letters like anything else (docs/conflicts.md C94).
+      if (error instanceof TransportUnavailableError && receipt.stallCount < QUEUE.STALL_MAX_RELEASES) {
+        await queue.release(receipt.receiptId, {
+          countReceive: false,
+          delayMs: QUEUE.STALL_DELAY_MS,
+        });
+        logger.warn("provider unreachable: node returned to the queue", {
+          nodeId: receipt.message.nodeId,
+          stallCount: receipt.stallCount + 1,
+          retryInMs: QUEUE.STALL_DELAY_MS,
+          error,
+        });
+        return;
+      }
       logger.warn("node handler failed", {
         nodeId: receipt.message.nodeId,
         receiveCount: receipt.receiveCount,
+        stallCount: receipt.stallCount,
         error,
       });
       // receive() counts before delivery, so the first attempt is 1 and the third failure dead-letters -
@@ -101,7 +126,7 @@ export function createLocalQueueWorker({
       if (receipt.receiveCount >= QUEUE.MAX_RECEIVES) {
         await queue.delete(receipt.receiptId);
         try {
-          await onDeadLetter(receipt.message);
+          await onDeadLetter(receipt.message, error);
         } catch (dlqError) {
           // Nothing is left to retry with; losing the whole worker here would strand the rest of the tree.
           logger.error("dead-letter handler failed", { nodeId: receipt.message.nodeId, error: dlqError });
@@ -147,6 +172,8 @@ export function createLocalQueueWorker({
       if (isIdle()) return Promise.resolve();
       return new Promise<void>((resolve) => idleWaiters.push(resolve));
     },
+
+    isIdle,
 
     async stop() {
       running = false;

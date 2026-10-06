@@ -15,6 +15,7 @@ import { createMemoryRunStateStore } from "../../src/infrastructure/memory/memor
 import { createMemoryTreeRepository } from "../../src/infrastructure/memory/memory-tree.repository";
 import { createLocalQueueWorker } from "../../src/interfaces/workers/local-queue-worker";
 import { fakeExpander, type FakeExpanderOptions } from "./fake-expander";
+import { failureReason } from "../../src/shared/failure-reason";
 import { fakeLogger } from "./fake-generate";
 
 export type HarnessOptions = FakeExpanderOptions & {
@@ -55,10 +56,28 @@ export function buildHarness(options: HarnessOptions = {}) {
   const treeRepo = createMemoryTreeRepository();
   const runRepo = createMemoryRunRepository();
   const dedup = createMemoryDedupStore();
+  const articleQueue = createMemoryNodeQueue();
   const fanIn = createFanIn({ nodeState, treeRepo, runState, runRepo });
 
-  const expandNode = createExpandNode({ nodeState, dedup, treeRepo, queue, runState, fanIn, constructor, logger: log });
-  const handleDeadLetter = createHandleDeadLetter({ fanIn, logger: log });
+  // No article worker here: there is no writer in this harness. Construction still FILLS articleQueue
+  // (C91 - each expanded node sends its own article message), which is exactly what these tests read.
+  const expandNode = createExpandNode({
+    nodeState,
+    dedup,
+    treeRepo,
+    queue,
+    articleQueue,
+    runState,
+    fanIn,
+    constructor,
+    logger: log,
+  });
+  const handleDeadLetter = createHandleDeadLetter({
+    fanIn,
+    logger: log,
+    // The real formatter, not a stub: a test asserting on a stored reason should see what ships.
+    describeFailure: (error) => failureReason(error),
+  });
   const haltRun = createHaltRun({ runRepo, logger: log });
 
   let nextId = 0;
@@ -93,6 +112,8 @@ export function buildHarness(options: HarnessOptions = {}) {
     logs,
     fatals,
     queue,
+    // The second pass's queue, so a test can read the article messages construction sent as it went.
+    articleQueue,
     nodeState,
     runState,
     treeRepo,

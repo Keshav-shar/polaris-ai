@@ -1,4 +1,4 @@
-import { APIError } from "openai";
+import { APIConnectionError, APIConnectionTimeoutError, APIError } from "openai";
 import { describe, expect, it } from "vitest";
 import { LLM } from "../../../../src/config/constants";
 import { bodyRetryAfterMs, classifyLlmError } from "../../../../src/infrastructure/llm/rate-limit";
@@ -160,14 +160,114 @@ describe("classifyLlmError", () => {
     expect(classifyLlmError({ status: 403, message: "forbidden" }).kind).toBe("fatal");
   });
 
-  it("retries server errors, timeouts and bare network failures", () => {
+  it("retries what the SERVER failed at, and separates it from what never reached the server", () => {
     expect(classifyLlmError({ status: 503, message: "overloaded" }).kind).toBe("retryable");
     expect(classifyLlmError({ status: 408, message: "timeout" }).kind).toBe("retryable");
-    expect(classifyLlmError(new Error("ECONNRESET")).kind).toBe("retryable");
+    // Changed deliberately in C94: this used to be "retryable" like a 503, which is what let a
+    // ~1-minute outage burn every receive and dead-letter 14 articles.
+    expect(classifyLlmError(new Error("ECONNRESET")).kind).toBe("network");
+  });
+
+  describe("a request that never reached the provider (C94)", () => {
+    // The distinction the whole stall path rests on: a 5xx is the SERVER failing, a connection error is
+    // the request never arriving. The SDK funnels every pre-HTTP failure into APIConnectionError with
+    // `status: undefined`, which used to make it indistinguishable from "overloaded".
+    const socketError = (code: string) => Object.assign(new Error(`connect ${code} 1.2.3.4:443`), { code });
+
+    it("classifies the SDK's own connection errors, cause and all", () => {
+      const connection = classifyLlmError(new APIConnectionError({ cause: socketError("ECONNRESET") }));
+      expect(connection.kind).toBe("network");
+      // The cause IS the diagnosis: "Connection error." alone never says what gave way.
+      expect(connection.detail).toContain("ECONNRESET");
+      expect(connection.status).toBeUndefined();
+
+      // The 60 s client-side abort, which carries no cause at all.
+      expect(classifyLlmError(new APIConnectionTimeoutError({})).kind).toBe("network");
+    });
+
+    it("classifies undici's bare fetch failure, whose code is one level down", () => {
+      const fetchFailed = Object.assign(new TypeError("fetch failed"), {
+        cause: socketError("UND_ERR_CONNECT_TIMEOUT"),
+      });
+      const classified = classifyLlmError(fetchFailed);
+      expect(classified.kind).toBe("network");
+      expect(classified.detail).toContain("UND_ERR_CONNECT_TIMEOUT");
+    });
+
+    it("recognises every socket code the build has actually seen, wherever it is written", () => {
+      for (const code of ["ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"]) {
+        expect(classifyLlmError(new APIConnectionError({ cause: socketError(code) })).kind).toBe("network");
+        // Some layers only put the code in the message, so both are read.
+        expect(classifyLlmError(new Error(`getaddrinfo ${code} api.groq.com`)).kind).toBe("network");
+      }
+    });
+
+    it("never calls a real HTTP response a network fault, whatever its body says", () => {
+      // The guard against over-matching: a 503 whose body happens to mention a socket code is still the
+      // server answering, and must keep the retry semantics C50/C68 tuned on it.
+      expect(classifyLlmError({ status: 503, message: "upstream ECONNRESET" }).kind).toBe("retryable");
+      expect(classifyLlmError(APIError.generate(500, undefined, "boom", new Headers())).kind).toBe("retryable");
+      expect(classifyLlmError(new Error("LLM returned no content")).kind).toBe("retryable");
+    });
   });
 
   it("does not retry a request the server rejected on its merits", () => {
     expect(classifyLlmError({ status: 400, message: "bad request" }).kind).toBe("fatal");
     expect(classifyLlmError({ status: 404, message: "no such model" }).kind).toBe("fatal");
+  });
+
+  // The single load-bearing assumption behind model rotation: Groq's per-MINUTE token limit must read as
+  // retryable with its stated sub-second wait. C56 is the cautionary tale of an untested classification
+  // silently inverting, so this pins the body Groq actually returned during a real depth-2 build.
+  // Groq words its wait differently from Gemini ("try again in", and sometimes in MILLISECONDS). Reading
+  // it wrong is not harmless: the model pool then shelves a member for a flat DEFAULT_COOLDOWN_MS when
+  // the server asked for less, throttling a build that could have continued.
+  it("reads Groq's 'try again in' wait, in seconds and in milliseconds", () => {
+    expect(bodyRetryAfterMs("... (RPM): Limit 30, Used 30. Please try again in 2s.")).toBe(2_000);
+    expect(bodyRetryAfterMs("... (TPM): Limit 8000, Used 7157. Please try again in 787.5ms.")).toBe(788);
+    expect(bodyRetryAfterMs("Please try again in 4.2375s.")).toBe(4_238);
+  });
+
+  it("still prefers the structured retryDelay over prose when both are present", () => {
+    const body = '{"retryDelay":"37s"} ... Please try again in 2s.';
+    expect(bodyRetryAfterMs(body)).toBe(37_000);
+  });
+
+  it("classifies Groq's live tokens-per-minute 429 as retryable with its stated wait", () => {
+    const groqTpmLive = sdkError(429, {
+      error: {
+        message:
+          "Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m2` service tier " +
+          "`on_demand` on tokens per minute (TPM): Limit 8000, Used 7157, Requested 948. " +
+          "Please try again in 787.5ms. Need more tokens? Upgrade to Dev Tier today.",
+        type: "tokens",
+        code: "rate_limit_exceeded",
+      },
+    });
+    const classified = classifyLlmError(groqTpmLive);
+    expect(classified.kind).toBe("retryable");
+    expect(classified.status).toBe(429);
+  });
+
+  // Groq's server-side JSON-mode validator rejecting the MODEL's malformed output. Reproduced live ~1 in
+  // 8 on qwen/qwen3.8-27b with the real expand prompt. Fatal would burn all three queue redeliveries and
+  // dead-letter a node that a re-roll (or another pool member) answers correctly.
+  it("retries a 400 json_validate_failed, because that is a bad sample, not a bad request", () => {
+    const jsonValidateFailed = sdkError(400, {
+      error: {
+        message: "Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for details.",
+        type: "invalid_request_error",
+        code: "json_validate_failed",
+        failed_generation: '{"brief": string, "children": string[]}"\n2.  **Context',
+      },
+    });
+    expect(classifyLlmError(jsonValidateFailed).kind).toBe("retryable");
+  });
+
+  it("keeps every other 400 fatal, including one carrying an unrelated code", () => {
+    expect(classifyLlmError({ status: 400, message: "bad request" }).kind).toBe("fatal");
+    expect(
+      classifyLlmError({ status: 400, error: { code: "context_length_exceeded" }, message: "too long" }).kind,
+    ).toBe("fatal");
   });
 });
