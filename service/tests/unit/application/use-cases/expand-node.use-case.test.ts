@@ -3,7 +3,7 @@ import { rootConstructMessage } from "../../../../src/application/tree/messages"
 import { buildHarness } from "../../../fixtures/build-harness";
 
 const runId = "11111111-1111-4111-8111-111111111111";
-const rootOf = (maxDepth: number) => rootConstructMessage(runId, { topic: "photosynthesis", maxDepth });
+const rootOf = (maxDepth: number) => rootConstructMessage(runId, { topic: "photosynthesis", maxDepth, request: "photosynthesis" });
 
 describe("expand-node use-case", () => {
   it("expands a node, stores it and enqueues its children", async () => {
@@ -29,8 +29,11 @@ describe("expand-node use-case", () => {
     const tree = await h.treeRepo.getTree(runId);
     expect(tree).toMatchObject({ topic: "photosynthesis", status: "expanded" });
     expect(tree?.children.map((c) => c.topic)).toEqual(["photosynthesis 1", "photosynthesis 2"]);
-    // The children are known but untouched: listed, with no brief and nothing claimed yet.
-    expect(tree?.children.every((c) => c.status === "pending" && c.brief === "")).toBe(true);
+    // The children are known but unclaimed - and already carry the brief the root's call wrote for each (C99).
+    expect(tree?.children.map((c) => [c.status, c.brief])).toEqual([
+      ["pending", "brief for photosynthesis 1"],
+      ["pending", "brief for photosynthesis 2"],
+    ]);
   });
 
   it("rule 6: re-delivering a node does not undo the rows already written for it", async () => {
@@ -95,22 +98,103 @@ describe("expand-node use-case", () => {
     expect(sharedParents).toHaveLength(1);
   });
 
-  it("completes immediately at a leaf and never claims topics there", async () => {
-    const h = buildHarness();
-    // maxDepth 1 makes the root a taper node and depth 1 the leaf layer.
+  // C99: the final layer is written by its parent and never called. One call builds a depth-1 tree.
+  it("completes a final-layer child itself: no construct message, no call, article queued, parent done", async () => {
+    const h = buildHarness({ breadth: 2 });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
     const root = rootOf(1);
     await h.expandNode.execute(root);
+
+    expect(h.expander.calls).toEqual(["photosynthesis"]);
+    expect(h.queue.size()).toBe(0);
+    const tree = await h.treeRepo.getTree(runId);
+    expect(tree?.status).toBe("done");
+    expect(tree?.children.map((c) => [c.topic, c.status, c.brief])).toEqual([
+      ["photosynthesis 1", "done", "brief for photosynthesis 1"],
+      ["photosynthesis 2", "done", "brief for photosynthesis 2"],
+    ]);
+    // The root's article and both children's, in one batch.
+    const articles = await h.articleQueue.receive(10);
+    expect(articles.map((a) => a.message.topic)).toEqual(["photosynthesis", "photosynthesis 1", "photosynthesis 2"]);
+    expect(await h.runState.get(runId)).toMatchObject({ nodesDone: 3, nodesFailed: 0 });
+    expect((await h.runRepo.get(runId))?.status).toBe("constructed");
+  });
+
+  it("a redelivered final-layer parent neither re-counts its children nor re-calls the model", async () => {
+    const h = buildHarness({ breadth: 2 });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
+    await h.expandNode.execute(rootOf(2));
     const [child] = await h.queue.receive(1);
+
+    // Simulate a crash after the work was done but before the message was acknowledged.
+    await h.expandNode.execute(child!.message);
+    const countedOnce = await h.runState.get(runId);
+    const queuedOnce = h.queue.size();
+    const articlesOnce = h.articleQueue.size();
     await h.expandNode.execute(child!.message);
 
-    const state = await h.nodeState.claim({
-      runId,
-      nodeId: child!.message.nodeId,
-      parentId: root.nodeId,
-      depth: 1,
-    });
-    expect(state.status).toBe("done");
-    expect(state.result?.children).toEqual([]);
+    expect(h.expander.countFor(child!.message.topic)).toBe(1);
+    expect(await h.runState.get(runId)).toEqual(countedOnce);
+    // Nothing new on either queue: a final-layer child never gets a construct message at all.
+    expect(h.queue.size()).toBe(queuedOnce);
+    expect(h.articleQueue.size()).toBe(articlesOnce);
+  });
+
+  it("answers a stray final-layer message from the brief it carries, without a call", async () => {
+    const h = buildHarness({ breadth: 2 });
+    const root = rootOf(1);
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
+    await h.expandNode.execute(root);
+    const leaf = (await h.articleQueue.receive(10))[1]!.message;
+
+    // Delivered to construction anyway (an old message, an operator re-drive): it must cost nothing.
+    await h.expandNode.execute({ ...leaf, pass: "construct" });
+    expect(h.expander.calls).toEqual(["photosynthesis"]);
+  });
+
+  // C100: the root call names the topic; the raw request never travels further than the root's own message.
+  it("records the canonical topic the root named, and never passes the raw request to a child", async () => {
+    const h = buildHarness({ breadth: 2, rootTopic: "Photosynthesis" });
+    const request = "please teach me photosynthesis, 2 levels deep";
+    await h.runRepo.create({ runId, topic: request, maxDepth: 2, status: "constructing" });
+    await h.expandNode.execute(rootConstructMessage(runId, { topic: request, maxDepth: 2, request }));
+
+    expect((await h.runRepo.get(runId))?.topic).toBe("Photosynthesis");
+    expect((await h.treeRepo.getTree(runId))?.topic).toBe("Photosynthesis");
+    const children = (await h.queue.receive(10)).map((r) => r.message);
+    for (const message of children) {
+      expect(message.request).toBeUndefined();
+      expect(message.ancestors[0]?.topic).toBe("Photosynthesis");
+      expect(JSON.stringify(message)).not.toContain(request);
+    }
+    const [rootArticle] = await h.articleQueue.receive(1);
+    expect(rootArticle?.message).toMatchObject({ topic: "Photosynthesis" });
+    expect(rootArticle?.message.request).toBeUndefined();
+  });
+
+  it("keeps the canonical topic when the root is redelivered", async () => {
+    const h = buildHarness({ breadth: 2, rootTopic: "Photosynthesis" });
+    const request = "teach me photosynthesis";
+    await h.runRepo.create({ runId, topic: request, maxDepth: 2, status: "constructing" });
+    const root = rootConstructMessage(runId, { topic: request, maxDepth: 2, request });
+    await h.expandNode.execute(root);
+    await h.expandNode.execute(root);
+
+    expect(h.expander.calls).toHaveLength(1);
+    expect((await h.treeRepo.getTree(runId))?.topic).toBe("Photosynthesis");
+    expect((await h.runRepo.get(runId))?.topic).toBe("Photosynthesis");
+  });
+
+  // C101: the budget is spread evenly. With MAX_NODES_PER_RUN 7 at depth 2 the cap is 2 children per node
+  // (1 + 2 + 4 = 7), so every branch reaches the bottom instead of the first branches eating the budget.
+  it("cuts each node to the balanced branch cap in teaching order, so every branch reaches full depth", async () => {
+    const h = buildHarness({ breadth: 5, maxDepth: 2, maxNodesPerRun: 7 });
+    const runBuilt = await h.build("photosynthesis");
+    const { tree, stats } = await h.getTree.execute(runBuilt);
+    expect(tree?.children.map((c) => c.topic)).toEqual(["photosynthesis 1", "photosynthesis 2"]);
+    expect(tree?.children.every((c) => c.children.length === 2)).toBe(true);
+    // The 3 children each interior node proposed beyond the cap are reported as skipped (root + 2 = 3 nodes).
+    expect(stats).toMatchObject({ nodesDone: 7, nodesSkipped: 9 });
   });
 
   it("stores the result before sending children, so a fast child can always be counted", async () => {
@@ -151,20 +235,6 @@ describe("expand-node use-case", () => {
     const [article] = await h.articleQueue.receive(1);
     const node = await h.treeRepo.getNode(article!.message.nodeId);
     expect(node?.children.map((c) => c.topic)).toEqual(["photosynthesis 1", "photosynthesis 2"]);
-  });
-
-  it("sends a leaf's article too, with no children to wait for", async () => {
-    const h = buildHarness({ breadth: 2 });
-    const root = rootOf(1);
-    await h.expandNode.execute(root);
-    const [child] = await h.queue.receive(1);
-    await h.articleQueue.receive(1); // the root's own
-    await h.expandNode.execute(child!.message);
-
-    const [leafArticle] = await h.articleQueue.receive(1);
-    expect(leafArticle?.message.nodeId).toBe(child!.message.nodeId);
-    const node = await h.treeRepo.getNode(child!.message.nodeId);
-    expect(node?.children).toHaveLength(0);
   });
 
   it("sends no article for a node whose expansion failed", async () => {

@@ -3,13 +3,17 @@ import { childConstructMessage, rootConstructMessage } from "../../../../src/app
 import { buildHarness } from "../../../fixtures/build-harness";
 
 const runId = "11111111-1111-4111-8111-111111111111";
-// maxDepth 1: the root's children are leaves, so each completes as soon as it is expanded.
-const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1 });
+// maxDepth 2: the root's children are interior nodes with construct messages of their own, and each of them
+// completes as soon as it has written its (final-layer) children, which are never sent anywhere (C99).
+const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
+// maxDepth 1: the root writes its children as the final layer and completes them itself, so a single execute
+// builds the whole tree and queues every article - what the article-pass tests below need.
+const shallowRoot = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1, request: "photosynthesis" });
 
 describe("handle-dead-letter use-case", () => {
   it("marks a construct node failed and completes it for its parent", async () => {
     const h = buildHarness({ breadth: 2 });
-    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
     await h.expandNode.execute(root);
     const [first, second] = await h.queue.receive(2);
 
@@ -24,7 +28,7 @@ describe("handle-dead-letter use-case", () => {
 
   it("keeps the dead-lettered node in the tree, marked failed", async () => {
     const h = buildHarness({ breadth: 2 });
-    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
     await h.expandNode.execute(root);
     const [first] = await h.queue.receive(1);
     await h.handleDeadLetter.execute(first!.message);
@@ -40,8 +44,7 @@ describe("handle-dead-letter use-case", () => {
     // waiting forever for an article that will never be written.
     const h = buildHarness({ breadth: 2 });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    await h.expandNode.execute(root);
-    for (const receipt of await h.queue.receive(2)) await h.expandNode.execute(receipt.message);
+    await h.expandNode.execute(shallowRoot);
 
     // The root's article message went out the moment the root was expanded (C91), so it is first.
     const [rootArticle] = await h.articleQueue.receive(1);
@@ -52,21 +55,19 @@ describe("handle-dead-letter use-case", () => {
   });
 
   it("cannot strand a subtree, because construction enqueued every article itself (C91)", async () => {
-    // C89's bug in its strongest form: the root's article is dead-lettered BEFORE its children are even
-    // expanded. Under the old top-down hand-off the children's articles could only ever come from a
-    // SUCCESSFUL parent article, so this stranded the whole tree - articlesDone + articlesFailed could
-    // never reach nodesDone and the run stayed `constructed` for good (seen live: 17 of 50 nodes
-    // unattempted). Now each node sends its own, so a lost scroll costs exactly one scroll.
+    // C89's bug in its strongest form: the root's article is dead-lettered first. Under the old top-down
+    // hand-off the children's articles could only ever come from a SUCCESSFUL parent article, so this
+    // stranded the whole tree (seen live: 17 of 50 nodes unattempted). Now the node that creates a child
+    // sends its article, so a lost scroll costs exactly one scroll.
     const h = buildHarness({ breadth: 2 });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    await h.expandNode.execute(root);
+    await h.expandNode.execute(shallowRoot);
 
     const [rootArticle] = await h.articleQueue.receive(1);
     await h.handleDeadLetter.execute(rootArticle!.message);
 
-    // Only now are the children built - and their article messages arrive regardless.
-    for (const receipt of await h.queue.receive(2)) await h.expandNode.execute(receipt.message);
-    const children = await h.articleQueue.receive(2);
+    // The final-layer children's messages went out with the root's (C99) and arrive regardless.
+    const children = await h.articleQueue.receive(10);
     expect(children).toHaveLength(2);
     expect(children.map((c) => c.message.pass)).toEqual(["article", "article"]);
 
@@ -82,8 +83,7 @@ describe("handle-dead-letter use-case", () => {
     // fixes - were indistinguishable from the API.
     const h = buildHarness({ breadth: 2 });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    await h.expandNode.execute(root);
-    for (const receipt of await h.queue.receive(2)) await h.expandNode.execute(receipt.message);
+    await h.expandNode.execute(shallowRoot);
     const [rootArticle] = await h.articleQueue.receive(1);
 
     const cause = new Error("model returned no valid JSON");
@@ -102,22 +102,20 @@ describe("handle-dead-letter use-case", () => {
   it("enqueues nothing at all, however often the dead-letter is redelivered", async () => {
     const h = buildHarness({ breadth: 2 });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    await h.expandNode.execute(root);
-    for (const receipt of await h.queue.receive(2)) await h.expandNode.execute(receipt.message);
+    await h.expandNode.execute(shallowRoot);
     const [rootArticle] = await h.articleQueue.receive(1);
 
     await h.handleDeadLetter.execute(rootArticle!.message);
     await h.handleDeadLetter.execute(rootArticle!.message);
 
-    // The two left are the children's own messages, sent by their expansions; the failure path added none.
+    // The two left are the children's own messages, sent with the root's (C99); the failure path added none.
     expect(await h.articleQueue.receive(10)).toHaveLength(2);
   });
 
   it("does not let a duplicate article dead-letter count twice", async () => {
     const h = buildHarness({ breadth: 2 });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    await h.expandNode.execute(root);
-    for (const receipt of await h.queue.receive(2)) await h.expandNode.execute(receipt.message);
+    await h.expandNode.execute(shallowRoot);
     const [rootArticle] = await h.articleQueue.receive(1);
 
     await h.handleDeadLetter.execute(rootArticle!.message);

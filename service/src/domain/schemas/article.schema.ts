@@ -8,12 +8,12 @@ import { HttpUrl } from "./url.schema";
 // What the writer may see about a node. Every level is a strictObject, which is what makes the limits
 // below structural rather than a matter of prompt discipline.
 //
-// The invariant changed twice. C86 replaced "children are absent" with "each child's TOPIC and BRIEF".
-// C91 then moved the article pass to run beside construction - a node's scroll is written while its
-// children are still being expanded - so a child's brief does not exist yet and the payload is the
-// child's TOPIC alone. Overlap prevention is unchanged in kind and stricter in degree: the writer can
-// NAME a subtopic and hand the detail down, and a child's brief, article, evidence and own children are
-// all out of reach, so "one node, one slice" still holds.
+// The invariant changed three times. C86 replaced "children are absent" with "each child's TOPIC and
+// BRIEF". C91 moved the article pass to run beside construction, before a child had expanded, which cut the
+// payload to the TOPIC alone. C102 restores the brief: since C99 a parent's own expansion writes each
+// child's brief, so it exists before the parent's article is queued. The writer can NAME a subtopic and say
+// in a clause what it covers; a child's article, evidence and own children stay out of reach, so "one node,
+// one slice" still holds.
 export const ArticleContext = z.strictObject({
   node: z.strictObject({
     id: z.uuid(),
@@ -23,9 +23,9 @@ export const ArticleContext = z.strictObject({
   }),
   parent: z.strictObject({ topic: z.string(), brief: z.string() }).nullable(), // null for the root
   isLeaf: z.boolean(),
-  // Signpost material only. strictObject per child, so a child's brief, article or own children cannot
+  // Signpost material only. strictObject per child, so a child's article, evidence or own children cannot
   // be smuggled in by a caller that builds the context by hand.
-  children: z.array(z.strictObject({ topic: z.string() })),
+  children: z.array(z.strictObject({ topic: z.string(), brief: z.string() })),
   evidence: z.array(EvidenceItem),
 });
 export type ArticleContext = z.infer<typeof ArticleContext>;
@@ -62,3 +62,11 @@ export const WriterOutput = ArticleOutput.extend({
   questions: z.array(QuizQuestion).optional(),
 });
 export type WriterOutput = z.infer<typeof WriterOutput>;
+
+// What the article pass STORES as a node's draft (idempotency rule 2): the writer's output plus the
+// credibility verdict it was written under. The verdict has to travel with the draft, because a redelivery
+// reuses the draft without searching again and so cannot recompute it (C118). Verified = the gate passed
+// (enough credible sources) AND the article cites at least one of them: a passed gate the writer ignored
+// is not a sourced article.
+export const ArticleDraft = WriterOutput.extend({ credibilityVerified: z.boolean() });
+export type ArticleDraft = z.infer<typeof ArticleDraft>;

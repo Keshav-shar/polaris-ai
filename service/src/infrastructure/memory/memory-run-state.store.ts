@@ -22,12 +22,13 @@ export function createMemoryRunStateStore(maxNodesPerRun: number = MAX_NODES_PER
     };
 
   return {
-    async reserveNodes(runId, requested) {
+    async reserveNodes(runId, requested, limit = requested) {
       if (!Number.isInteger(requested) || requested < 0) {
         throw new RangeError(`requested must be an integer >= 0, got ${requested}`);
       }
       const state = itemFor(runId);
-      const granted = Math.min(requested, Math.max(0, maxNodesPerRun - state.nodesCreated));
+      const wanted = Math.min(requested, Math.max(0, limit));
+      const granted = Math.min(wanted, Math.max(0, maxNodesPerRun - state.nodesCreated));
       state.nodesCreated += granted;
       state.nodesSkipped += requested - granted;
       runs.set(runId, state);

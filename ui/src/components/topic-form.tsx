@@ -6,8 +6,8 @@ import { ApiClientError, startTree } from "../lib/api-client";
 const PROMPT_MAX_LENGTH = 500; // TreeRequestBody: z.string().trim().min(1).max(500)
 const MAX_DEPTH_CEILING = 6; // service/src/config/constants.ts
 
-// "auto" means send no maxDepth at all, leaving the depth the parser infers from the prompt untouched.
-// The options below can only ever LOWER it; nothing here can raise a run past MAX_NODES_PER_RUN.
+// "auto" means send no maxDepth at all: the service takes a depth stated in the prompt ("3 levels deep"),
+// else its default (C100). Nothing here can raise a run past MAX_DEPTH_CEILING or MAX_NODES_PER_RUN.
 const DEPTH_OPTIONS = Array.from({ length: MAX_DEPTH_CEILING }, (_, i) => i + 1);
 
 const FIELD =

@@ -8,11 +8,13 @@ export type RunStatePort = {
   countNode(runId: string, status: TerminalStatus): Promise<RunState>;
 
   // Claims up to `requested` node slots against MAX_NODES_PER_RUN and returns how many were granted
-  // (0..requested). One conditional write, so two parents expanding at once cannot both spend the last
-  // slot. The refused remainder is counted as skipped. Phase 13 is the same conditional update in
+  // (0..min(requested, limit)). `limit` is the balanced branch cap (C101): children over it are refused
+  // too, so they count as skipped exactly like the ones the budget refuses - the UI's "narrower than
+  // maxDepth implies" notice must not depend on WHICH guard trimmed the tree. One conditional write, so two
+  // parents expanding at once cannot both spend the last slot. Phase 13 is the same conditional update in
   // DynamoDB. Idempotency: expand-node calls this ONCE per node, before the child set is stored, so a
   // redelivery reuses the stored (already trimmed) set and never reserves twice.
-  reserveNodes(runId: string, requested: number): Promise<number>;
+  reserveNodes(runId: string, requested: number, limit?: number): Promise<number>;
   get(runId: string): Promise<RunState | undefined>;
 
   // Atomic increment of articlesDone / articlesFailed, same DynamoDB ADD semantics as countNode, and it

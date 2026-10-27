@@ -17,6 +17,8 @@ type Envelope = {
   stallCount: number;
   // Epoch ms before which this message is hidden. 0 = visible now.
   visibleAt: number;
+  // Arrival order, renewed on every release so a retried message goes behind its peers, never ahead of them.
+  seq: number;
   message: NodeMessage;
 };
 
@@ -27,6 +29,9 @@ export type MemoryQueueDeps = {
   // setTimeout's shape, returning a cancel. The default is the real timer; `tests/fixtures/fake-clock.ts`
   // supplies a deterministic one.
   schedule?: (ms: number, run: () => void) => () => void;
+  // fifo: arrival order. priority (C128): boosted first, then shallower depth, then arrival order - the order
+  // composition gives both queues, so a learner's boost and a shallow scroll go ahead of deep ones.
+  order?: "fifo" | "priority";
 };
 
 const defaultSchedule = (ms: number, run: () => void): (() => void) => {
@@ -48,14 +53,37 @@ const defaultSchedule = (ms: number, run: () => void): (() => void) => {
 export function createMemoryNodeQueue({
   now = Date.now,
   schedule = defaultSchedule,
+  order = "fifo",
 }: MemoryQueueDeps = {}): MemoryNodeQueue {
   const visible: Envelope[] = [];
   const inFlight = new Map<string, Envelope>();
   const waiters: (() => void)[] = [];
   let nextReceiptId = 0;
+  let nextSeq = 0;
   let cancelWake: (() => void) | undefined;
 
   const isDue = (envelope: Envelope): boolean => envelope.visibleAt <= now();
+
+  // True when `a` should be delivered before `b`. A boost always wins, in either order mode.
+  const ahead = (a: Envelope, b: Envelope): boolean => {
+    const boostA = a.message.boost === true;
+    const boostB = b.message.boost === true;
+    if (boostA !== boostB) return boostA;
+    if (order === "priority" && a.message.depth !== b.message.depth) return a.message.depth < b.message.depth;
+    return a.seq < b.seq;
+  };
+
+  // The best DUE message, not simply the first: a delayed one stays where it is, untouched.
+  const nextDue = (): number => {
+    let best = -1;
+    for (let i = 0; i < visible.length; i++) {
+      const candidate = visible[i];
+      if (candidate === undefined || !isDue(candidate)) continue;
+      const current = visible[best];
+      if (current === undefined || ahead(candidate, current)) best = i;
+    }
+    return best;
+  };
 
   const wake = (): void => {
     while (waiters.length > 0) waiters.shift()?.();
@@ -86,6 +114,7 @@ export function createMemoryNodeQueue({
       receiveCount: 0,
       stallCount: 0,
       visibleAt: 0,
+      seq: nextSeq++,
       message: NodeMessage.parse(message),
     });
   };
@@ -107,9 +136,7 @@ export function createMemoryNodeQueue({
     async receive(max) {
       const taken: QueueReceipt[] = [];
       while (taken.length < max) {
-        // The first DUE message, not simply the first: a delayed one stays where it is, so the order of
-        // everything behind it is untouched.
-        const at = visible.findIndex(isDue);
+        const at = nextDue();
         if (at === -1) break;
         const [envelope] = visible.splice(at, 1);
         if (envelope === undefined) break;
@@ -123,6 +150,16 @@ export function createMemoryNodeQueue({
         });
       }
       return taken;
+    },
+
+    async promote(message) {
+      const envelope = visible.find((e) => e.message.pass === message.pass && e.message.nodeId === message.nodeId);
+      // In flight or gone: leave it alone. Adding a copy here is exactly what this method must never do.
+      if (envelope === undefined) return "not-queued";
+      // Its counters and its hidden-until stay as they are: a stalled message is promoted, not un-delayed.
+      envelope.message = { ...envelope.message, boost: true };
+      if (isDue(envelope)) wake();
+      return "promoted";
     },
 
     waitForMessage() {
@@ -149,6 +186,7 @@ export function createMemoryNodeQueue({
       }
       const delayMs = options?.delayMs ?? 0;
       envelope.visibleAt = delayMs > 0 ? now() + delayMs : 0;
+      envelope.seq = nextSeq++;
       // Tail, not head: a head push would hot-loop on a poison message and serialise everything behind it.
       visible.push(envelope);
       if (delayMs > 0) armWake();

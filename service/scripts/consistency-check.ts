@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { createConsolidatorAgent } from "../src/application/agents/consolidator.agent";
 import { createExpandAgent } from "../src/application/agents/expand.agent";
 import { verifyExpansion } from "../src/application/agents/verifier.agent";
 import { createStructuredGenerator } from "../src/application/llm/structured";
@@ -12,7 +11,7 @@ import { layerPosition } from "../src/domain/traversal/layer-position";
 import { normalizeTopic } from "../src/domain/traversal/node-id";
 import { createLogger } from "../src/shared/logger";
 
-// Runs the same node N times and reports how much the children vary. Costs N LLM calls (more over the cap).
+// Runs the same node N times and reports how much the children vary. Costs N LLM calls.
 // Compare settings by running it again with a different LLM_TEMPERATURE / LLM_SEED_MODE.
 
 function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
@@ -38,15 +37,19 @@ async function main(): Promise<void> {
   const constructor = createNodeConstructor({
     expand: createExpandAgent({ generate }).expand,
     verify: verifyExpansion,
-    consolidate: createConsolidatorAgent({ generate }).consolidate,
     logger: createLogger(),
   });
 
   // Sequential on purpose: parallel calls could hit the provider's per-minute limit.
   const results: string[][] = [];
   for (let i = 0; i < runs; i++) {
-    const out = await constructor.construct({ topic: topic.trim(), context, seedKey: `consistency:${topic.trim()}` });
-    results.push(out.children);
+    const out = await constructor.construct({
+      topic: topic.trim(),
+      brief: `An overview of ${topic.trim()}.`,
+      context,
+      seedKey: `consistency:${topic.trim()}`,
+    });
+    results.push(out.children.map((child) => child.topic));
   }
 
   const sets = results.map((children) => new Set(children.map(normalizeTopic)));

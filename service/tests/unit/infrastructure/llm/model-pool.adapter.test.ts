@@ -3,10 +3,13 @@ import type { ChatMessage, LlmPort } from "../../../../src/application/ports/llm
 import { MODEL_POOL } from "../../../../src/config/constants";
 import { QuotaExhaustedError } from "../../../../src/domain/errors/quota-exhausted.error";
 import { TransportUnavailableError } from "../../../../src/domain/errors/transport-unavailable.error";
+import { createPriorityLimiter } from "../../../../src/infrastructure/llm/concurrency";
 import {
   createModelPoolLlm,
+  estimateAdmissionTokens,
   type ModelPoolDeps,
   type PoolMember,
+  priorityRank,
 } from "../../../../src/infrastructure/llm/model-pool.adapter";
 import { fakeClock } from "../../../fixtures/fake-clock";
 import { fakeLogger } from "../../../fixtures/fake-generate";
@@ -187,6 +190,14 @@ describe("createModelPoolLlm", () => {
     expect((error as QuotaExhaustedError).model).toContain("a");
   });
 
+  it("keeps WHICH daily limit ran out on the pool's own error, so the halt reason can say it (C119)", async () => {
+    const a = member("a", "x", new QuotaExhaustedError("a", undefined, "tokens"));
+    const b = member("b", "y", new QuotaExhaustedError("b", undefined, "tokens"));
+    const error = (await ask(pool([a, b])).catch((e: unknown) => e)) as QuotaExhaustedError;
+    expect(error.limit).toBe("tokens");
+    expect(error.message).toMatch(/daily quota exhausted for model ".*" \(tokens per day\)/);
+  });
+
   it("rethrows RAW when members are merely cooling, so a transient wall never halts the run", async () => {
     // QuotaExhaustedError means "the DAY is gone" and makes the worker halt permanently. A per-minute
     // wall clears by itself, so it must not borrow that meaning.
@@ -326,5 +337,117 @@ describe("createModelPoolLlm", () => {
     await ask(llm);
     await ask(llm);
     expect(warnings.filter((w) => w.msg.includes("member retired")).length).toBe(1);
+  });
+});
+
+describe("scheduling (C129, C130)", () => {
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("rotates past a member its pacer refuses, spending no request on it and no attempt", async () => {
+    const paced = member("paced", "from-paced");
+    const free = member("free", "from-free");
+    const llm = pool([
+      { ...paced, pacer: { admit: async () => ({ ok: false as const, retryAfterMs: 10_000 }) } },
+      free,
+    ]);
+    await expect(ask(llm)).resolves.toBe("from-free");
+    expect(paced.calls).toEqual([]);
+    // Shelved for the stated wait: the next call goes straight to the other member too.
+    await expect(ask(llm)).resolves.toBe("from-free");
+    expect(paced.calls).toEqual([]);
+  });
+
+  it("when every member is paced, waits out the shortest wait and then sends", async () => {
+    let refusals = 1;
+    const only = member("only", "late");
+    const llm = pool([
+      {
+        ...only,
+        pacer: {
+          admit: async () => (refusals-- > 0 ? { ok: false as const, retryAfterMs: 4_000 } : { ok: true as const }),
+        },
+      },
+    ]);
+    await expect(ask(llm)).resolves.toBe("late");
+    expect(llm.clock.sleeps).toEqual([4_000]);
+    expect(only.calls).toHaveLength(1);
+  });
+
+  it("holds no limiter slot while it sleeps out a cooldown, so another pool's call goes ahead", async () => {
+    // Regression: the slot used to wrap the WHOLE rotation loop, so a writer waiting for a cooled model
+    // blocked an expansion that had a free model of its own.
+    const limiter = createPriorityLimiter(1);
+    const wake = deferred();
+    const writer = createModelPoolLlm({
+      members: [member("writer-model", "article", tpm429, 1)],
+      policy: "throttle",
+      maxConcurrency: 1,
+      limiter,
+      logger: fakeLogger().logger,
+      sleep: () => wake.promise,
+    });
+    const expand = createModelPoolLlm({
+      members: [member("expand-model", "children")],
+      policy: "throttle",
+      maxConcurrency: 1,
+      limiter,
+      logger: fakeLogger().logger,
+    });
+
+    const article = ask(writer);
+    await tick();
+    // The writer is now asleep after its 429. The expansion must not wait for it.
+    await expect(ask(expand)).resolves.toBe("children");
+    wake.resolve();
+    await expect(article).resolves.toBe("article");
+  });
+
+  it("one shared limiter orders waiting calls across pools: expand before an article", async () => {
+    const limiter = createPriorityLimiter(1);
+    const gate = deferred();
+    const order: string[] = [];
+    const blocker: PoolMember = {
+      model: "blocker",
+      dailyRequestBudget: undefined,
+      llm: { chat: async () => (await gate.promise, "done") },
+    };
+    const recorder = (name: string): PoolMember => ({
+      model: name,
+      dailyRequestBudget: undefined,
+      llm: { chat: async () => (order.push(name), name) },
+    });
+    const make = (m: PoolMember) =>
+      createModelPoolLlm({ members: [m], policy: "throttle", maxConcurrency: 1, limiter, logger: fakeLogger().logger });
+
+    const first = make(blocker).chat([{ role: "user", content: "x" }], { priority: { lane: "article", depth: 0 } });
+    await tick();
+    const article = make(recorder("article")).chat([{ role: "user", content: "x" }], {
+      priority: { lane: "article", depth: 1 },
+    });
+    const expansion = make(recorder("expand")).chat([{ role: "user", content: "x" }], {
+      priority: { lane: "expand", depth: 2 },
+    });
+    await tick();
+    gate.resolve();
+    await Promise.all([first, article, expansion]);
+    expect(order).toEqual(["expand", "article"]);
+  });
+
+  it("ranks an unprioritised call behind every article", () => {
+    expect(priorityRank(undefined)).toEqual([2, Number.MAX_SAFE_INTEGER]);
+    expect(priorityRank({ lane: "boosted-article", depth: 4 })).toEqual([0, 4]);
+  });
+
+  it("estimates a request as the provider admits it: prompt tokens from characters plus the reply allowance", () => {
+    expect(
+      estimateAdmissionTokens([{ role: "system", content: "a".repeat(10) }, { role: "user", content: "bb" }]),
+    ).toBe(3 + MODEL_POOL.ADMISSION_OUTPUT_TOKENS);
   });
 });

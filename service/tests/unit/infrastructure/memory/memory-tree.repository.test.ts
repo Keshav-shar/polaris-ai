@@ -3,9 +3,9 @@ import { childConstructMessage, rootConstructMessage } from "../../../../src/app
 import { createMemoryTreeRepository } from "../../../../src/infrastructure/memory/memory-tree.repository";
 
 const runId = "11111111-1111-4111-8111-111111111111";
-const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2 });
-const light = childConstructMessage(root, "root brief", "light reactions");
-const calvin = childConstructMessage(root, "root brief", "calvin cycle");
+const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
+const light = childConstructMessage(root, "root brief", { topic: "light reactions", brief: "child brief" });
+const calvin = childConstructMessage(root, "root brief", { topic: "calvin cycle", brief: "child brief" });
 
 describe("memory tree repository", () => {
   it("returns null until the root has been written", async () => {
@@ -46,7 +46,7 @@ describe("memory tree repository", () => {
 
   it("keeps a failed node and its subtree, so the partial tree stays whole", async () => {
     const repo = createMemoryTreeRepository();
-    const grandchild = childConstructMessage(light, "light brief", "photosystem ii");
+    const grandchild = childConstructMessage(light, "light brief", { topic: "photosystem ii", brief: "child brief" });
     await repo.upsertNode(root, "root brief");
     await repo.upsertNode(light, "light brief");
     await repo.upsertNode(grandchild, "grandchild brief");
@@ -79,15 +79,41 @@ describe("memory tree repository", () => {
     await repo.upsertPending([light, calvin]);
     const tree = await repo.getTree(runId);
     expect(tree?.children.map((c) => c.topic)).toEqual(["light reactions", "calvin cycle"]);
-    expect(tree?.children.every((c) => c.status === "pending" && c.brief === "")).toBe(true);
+    // Each child row takes the brief its parent wrote for it (C99), from the start.
+    expect(tree?.children.every((c) => c.status === "pending" && c.brief === "child brief")).toBe(true);
   });
 
   it("keeps runs apart", async () => {
     const repo = createMemoryTreeRepository();
     const otherRun = "22222222-2222-4222-8222-222222222222";
     await repo.upsertNode(root, "b");
-    await repo.upsertNode(rootConstructMessage(otherRun, { topic: "mitosis", maxDepth: 1 }), "b2");
+    await repo.upsertNode(rootConstructMessage(otherRun, { topic: "mitosis", maxDepth: 1, request: "mitosis" }), "b2");
     expect((await repo.getTree(otherRun))?.topic).toBe("mitosis");
     expect((await repo.getTree(runId))?.topic).toBe("photosynthesis");
+  });
+});
+
+describe("memory tree repository, article axis vs construction upserts (C132)", () => {
+  it("a redelivered parent re-sending its children's rows does not erase a written or failed scroll", async () => {
+    const repo = createMemoryTreeRepository();
+    await repo.upsertNode(root, "root brief");
+    await repo.upsertPending([light, calvin]);
+    await repo.setArticleStatus(light.nodeId, "done");
+    await repo.setArticleStatus(calvin.nodeId, "failed", "RateLimitError: 429");
+    // The parent's expansion is redelivered after its final-layer children were already written.
+    await repo.upsertPending([light, calvin]);
+    await repo.upsertNode(light, null);
+    expect((await repo.getNode(light.nodeId))?.articleStatus).toBe("done");
+    expect(await repo.getNode(calvin.nodeId)).toMatchObject({
+      articleStatus: "failed",
+      articleFailureReason: "RateLimitError: 429",
+    });
+  });
+
+  it("exposes the path each node's messages carry, so a message can be rebuilt from rows (C128)", async () => {
+    const repo = createMemoryTreeRepository();
+    await repo.upsertNode(root, "root brief");
+    await repo.upsertPending([light]);
+    expect((await repo.getNode(light.nodeId))?.path).toBe(light.path);
   });
 });

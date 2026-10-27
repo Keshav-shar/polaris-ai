@@ -5,6 +5,12 @@ export type NodeQueuePort = {
   send(message: NodeMessage): Promise<void>;
   // Splits internally into chunks of QUEUE.SEND_BATCH_MAX (the SendMessageBatch limit).
   sendBatch(messages: readonly NodeMessage[]): Promise<void>;
+  // Moves this node's waiting message on this queue to the front (C128). Never adds a second copy: two
+  // deliveries of one article could both reach the writer, because claimArticle cannot tell a concurrent
+  // delivery from this one's own failed attempt. `not-queued` = nothing is waiting - in flight, finished, or
+  // never sent - and nothing changed. The full message is passed so a queue that cannot reorder (SQS, Phase
+  // 13: a priority queue beside the normal one) has a body to send; the memory queue reads only its key.
+  promote(message: NodeMessage): Promise<"promoted" | "not-queued">;
 };
 
 export type QueueReceipt = {

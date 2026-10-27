@@ -1,10 +1,11 @@
-import type { ChatMessage, ChatOptions, LlmPort } from "../../application/ports/llm.port";
-import { MODEL_POOL } from "../../config/constants";
+import type { ChatMessage, ChatOptions, ChatPriority, LlmPort } from "../../application/ports/llm.port";
+import { LLM_PRIORITY_LANES, MODEL_POOL } from "../../config/constants";
 import { QuotaExhaustedError } from "../../domain/errors/quota-exhausted.error";
 import { TransportUnavailableError } from "../../domain/errors/transport-unavailable.error";
 import { sha256Hex } from "../../shared/ids";
 import type { Logger } from "../../shared/logger";
-import { createLimiter } from "./concurrency";
+import { createPriorityLimiter, type Priority, type PriorityLimiter } from "./concurrency";
+import type { ModelPacer } from "./model-pacer";
 import type { Sleep } from "./openai-compatible.adapter";
 import { classifyLlmError } from "./rate-limit";
 import type { SwitchableLlm } from "./switchable";
@@ -31,14 +32,24 @@ export type PoolMember = {
   // This model's own requests/day, or undefined when the provider publishes no ceiling. Lets the pool
   // retire a member BEFORE it 429s, which is free: no token accounting, just a request count.
   dailyRequestBudget: number | undefined;
+  // Asked before every request whether this model has room this minute (C130). Shared by every pool that
+  // names the model. Absent = no proactive pacing; the provider's 429 still rules.
+  pacer?: Pick<ModelPacer, "admit">;
 };
 
 export type ModelPoolDeps = {
   // Ordered: members[0] leads. Non-empty by type, so a pool can never be built with nothing to call.
   members: readonly [PoolMember, ...PoolMember[]];
   policy: RotationPolicy;
+  // Builds this pool's own limiter when `limiter` is not given.
   maxConcurrency: number;
-  logger: Pick<Logger, "info" | "warn">;
+  // The process-wide limiter, shared with every other pool so LLM_MAX_CONCURRENCY caps the WHOLE process and
+  // one priority order spans construction and articles (C129). Composition always passes it.
+  limiter?: PriorityLimiter;
+  // Overrides the order-derived namespace. A one-member pool keeps the bare model id, the key material a
+  // single model has always used (C69, C131).
+  namespace?: string;
+  logger: Pick<Logger, "debug" | "info" | "warn">;
   sleep?: Sleep;
   now?: () => number;
 };
@@ -54,10 +65,31 @@ type MemberState = {
 
 const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// A call's place in the limiter's queue. No priority = the back of the article lane.
+export function priorityRank(priority: ChatPriority | undefined): Priority {
+  if (priority === undefined) return [LLM_PRIORITY_LANES.article, Number.MAX_SAFE_INTEGER];
+  return [LLM_PRIORITY_LANES[priority.lane], priority.depth];
+}
+
+// What the provider will charge this request against the minute when it admits it, roughly: the prompt plus
+// the allowance it reserves for the reply. The pacer weighs this against the model's remaining tokens/minute.
+export function estimateAdmissionTokens(messages: readonly ChatMessage[]): number {
+  const chars = messages.reduce((sum, message) => sum + message.content.length, 0);
+  return Math.ceil(chars / MODEL_POOL.CHARS_PER_TOKEN) + MODEL_POOL.ADMISSION_OUTPUT_TOKENS;
+}
+
+type Attempt =
+  | { kind: "reply"; reply: string }
+  | { kind: "error"; error: unknown }
+  // Not sent: the member stopped being ready while the call waited for a slot, or its pacer refused.
+  | { kind: "skipped" };
+
 export function createModelPoolLlm({
   members,
   policy,
   maxConcurrency,
+  limiter,
+  namespace: namespaceOverride,
   logger,
   sleep = defaultSleep,
   now = Date.now,
@@ -72,13 +104,15 @@ export function createModelPoolLlm({
   // Order-sensitive, not sorted: the order decides the lead, which decides the distribution of answers,
   // so two orderings genuinely produce different trees and must not share cached expansions. Computed
   // once, so it is stable for the process - the whole point of separating it from activeModel().
-  const namespace = `pool:${sha256Hex(members.map((m) => m.model).join("\u0000")).slice(0, 16)}`;
+  const namespace =
+    namespaceOverride ?? `pool:${sha256Hex(members.map((m) => m.model).join("\u0000")).slice(0, 16)}`;
   const label = `${members[0].model} +${members.length - 1} more`;
 
-  // One limiter for the pool, wrapping the whole rotation loop. A single logical request is in flight on
-  // at most one member at a time, so each member's own limiter can never see more than this and never
-  // blocks - redundant but harmless, and it keeps LLM_MAX_CONCURRENCY meaning what it says.
-  const limit = createLimiter(maxConcurrency);
+  // Held for ONE attempt, never across a cooldown sleep (C130): a call waiting out a throttled member used to
+  // keep its slot for the whole wait, so a cooling writer could hold back an expansion that had a free model.
+  // A single logical request is in flight on at most one member at a time, so each member's own limiter can
+  // never see more than this and never blocks.
+  const limit = limiter ?? createPriorityLimiter(maxConcurrency);
 
   let answered = members[0].model;
   // Where the next dispatch starts scanning under round-robin. Advanced once per logical request, not per
@@ -109,8 +143,20 @@ export function createModelPoolLlm({
     return !state.retired && state.cooldownUntil <= now();
   }
 
+  // A local throttle: our own pacer said no, so no request was spent. Logged at debug only - at 30
+  // requests/minute this happens routinely and is the system working, not a problem.
+  function pace(state: MemberState, ms: number): void {
+    const until = now() + ms;
+    if (until <= state.cooldownUntil) return;
+    state.cooldownUntil = until;
+    logger.debug("llm pool: member paced, rotating", { model: state.member.model, waitMs: ms });
+  }
+
   async function dispatch(messages: readonly ChatMessage[], options?: ChatOptions): Promise<string> {
+    const rank = priorityRank(options?.priority);
+    const estimate = estimateAdmissionTokens(messages);
     let attempts = 0;
+    let lastDailyLimit: "tokens" | "requests" | undefined;
     let lastError: unknown;
     // Fixed for the whole call: the order is the same on every pass of the outer loop, so a member that
     // was cooling when it was first reached is retried in the same position once it is ready.
@@ -123,10 +169,24 @@ export function createModelPoolLlm({
         // Rotation must multiply CAPACITY, never cost: without this ceiling, N members x their own retry
         // budgets would spend many times more free-tier requests per node than a single adapter does.
         if (attempts >= MODEL_POOL.MAX_ATTEMPTS) break;
-        attempts += 1;
-        state.requests += 1;
-        try {
-          const reply = await state.member.llm.chat(messages, options);
+        const attempt = await limit(rank, async (): Promise<Attempt> => {
+          // Re-checked inside the slot: another call may have cooled or retired this member meanwhile.
+          if (!ready(state)) return { kind: "skipped" };
+          const admission = (await state.member.pacer?.admit(estimate)) ?? { ok: true };
+          if (!admission.ok) {
+            pace(state, admission.retryAfterMs);
+            return { kind: "skipped" };
+          }
+          attempts += 1;
+          state.requests += 1;
+          try {
+            return { kind: "reply", reply: await state.member.llm.chat(messages, options) };
+          } catch (error) {
+            return { kind: "error", error };
+          }
+        });
+        if (attempt.kind === "skipped") continue;
+        if (attempt.kind === "reply") {
           answered = state.member.model;
           const budget = state.member.dailyRequestBudget;
           if (budget !== undefined && state.requests >= budget) {
@@ -134,43 +194,45 @@ export function createModelPoolLlm({
             // on restart, so it under-counts. The reactive QuotaExhaustedError path stays authoritative.
             retire(state, "daily request budget spent");
           }
-          return reply;
-        } catch (error) {
-          lastError = error;
-          // Already diagnosed by the member adapter; re-wrapping would nest the same sentence twice.
-          if (error instanceof TransportUnavailableError) throw error;
-          if (error instanceof QuotaExhaustedError) {
-            retire(state, "daily quota");
-            continue;
-          }
-          const classified = classifyLlmError(error);
-          // The request never reached the provider, so this says nothing about THIS member: every member
-          // dials the same network. Cooling them one at a time would spend the whole attempt budget to
-          // learn the same thing once per model, and the caller needs to know it was a stall rather than
-          // a failure, so it is raised as its own error (docs/conflicts.md C94).
-          if (classified.kind === "network") throw new TransportUnavailableError(label, classified.detail);
-          // A 404 is about THIS MODEL, not the pool: the key works and the request is well formed, the
-          // named model simply is not there. Retire the member and carry on, because the others are fine.
-          // Found live - Groq withdrew `groq/compound-mini` overnight and the pool-wide `fatal` rule below
-          // failed every node of a run that had three healthy models available.
-          if (classified.status === 404) {
-            retire(state, "model not available to this account");
-            continue;
-          }
-          // A bad key (401/403) or a malformed request fails identically on every member, so rotating
-          // would burn the whole pool to learn the same thing once per model.
-          if (classified.kind === "fatal") throw error;
-          if (policy === "exhaustion" && classified.status === 429) {
-            // Under this policy the member owns per-minute backoff (C50), so reaching here means it has
-            // already spent its own retry budget. Rotating now would undo that contract.
-            throw error;
-          }
-          cool(state, classified.retryAfterMs ?? MODEL_POOL.DEFAULT_COOLDOWN_MS);
+          return attempt.reply;
+        }
+        const { error } = attempt;
+        lastError = error;
+        // Already diagnosed by the member adapter; re-wrapping would nest the same sentence twice.
+        if (error instanceof TransportUnavailableError) throw error;
+        if (error instanceof QuotaExhaustedError) {
+          // Which limit, so a halted run says whether tokens or requests ran out (C119).
+          lastDailyLimit = error.limit ?? lastDailyLimit;
+          retire(state, error.limit === undefined ? "daily quota" : `daily quota (${error.limit} per day)`);
           continue;
         }
+        const classified = classifyLlmError(error);
+        // The request never reached the provider, so this says nothing about THIS member: every member
+        // dials the same network. Cooling them one at a time would spend the whole attempt budget to
+        // learn the same thing once per model, and the caller needs to know it was a stall rather than
+        // a failure, so it is raised as its own error (docs/conflicts.md C94).
+        if (classified.kind === "network") throw new TransportUnavailableError(`the LLM provider (${label})`, classified.detail);
+        // A 404 is about THIS MODEL, not the pool: the key works and the request is well formed, the
+        // named model simply is not there. Retire the member and carry on, because the others are fine.
+        // Found live - Groq withdrew `groq/compound-mini` overnight and the pool-wide `fatal` rule below
+        // failed every node of a run that had three healthy models available.
+        if (classified.status === 404) {
+          retire(state, "model not available to this account");
+          continue;
+        }
+        // A bad key (401/403) or a malformed request fails identically on every member, so rotating
+        // would burn the whole pool to learn the same thing once per model.
+        if (classified.kind === "fatal") throw error;
+        if (policy === "exhaustion" && classified.status === 429) {
+          // Under this policy the member owns per-minute backoff (C50), so reaching here means it has
+          // already spent its own retry budget. Rotating now would undo that contract.
+          throw error;
+        }
+        cool(state, classified.retryAfterMs ?? MODEL_POOL.DEFAULT_COOLDOWN_MS);
+        continue;
       }
 
-      // Nothing was callable this pass.
+      // Nothing was callable this pass. Any wait below happens OUTSIDE the limiter, holding no slot.
       if (states.every((s) => s.retired)) {
         // Every member is out for the day. Raised as a quota error so the worker's halt path works
         // exactly as it does for a single model - and, since C93, that halt is the end of the run.
@@ -178,7 +240,7 @@ export function createModelPoolLlm({
           const wait = s.cooldownUntil - now();
           return wait > 0 && (min === undefined || wait < min) ? wait : min;
         }, undefined);
-        throw new QuotaExhaustedError(label, earliest);
+        throw new QuotaExhaustedError(label, earliest, lastDailyLimit);
       }
       if (attempts >= MODEL_POOL.MAX_ATTEMPTS) {
         // Members are merely cooling, so this is a per-minute condition that clears by itself. Rethrowing
@@ -194,8 +256,7 @@ export function createModelPoolLlm({
   }
 
   return {
-    chat: (messages: readonly ChatMessage[], options?: ChatOptions) =>
-      limit(() => dispatch(messages, options)),
+    chat: (messages: readonly ChatMessage[], options?: ChatOptions) => dispatch(messages, options),
     activeModel: () => answered,
     cacheNamespace: () => namespace,
   };

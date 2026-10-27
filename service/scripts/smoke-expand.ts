@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { createConsolidatorAgent } from "../src/application/agents/consolidator.agent";
 import { createExpandAgent } from "../src/application/agents/expand.agent";
 import { verifyExpansion } from "../src/application/agents/verifier.agent";
 import { createStructuredGenerator } from "../src/application/llm/structured";
@@ -20,6 +19,10 @@ async function main(): Promise<void> {
   }
   const depth = Number(depthArg);
   const maxDepth = Number(maxDepthArg);
+  if (depth >= maxDepth) {
+    console.error("depth must be below maxDepth: the final layer is written by its parent and never called (C99)");
+    process.exit(1);
+  }
   // No ancestors: the smoke run expands one node in isolation.
   const context = NodeContext.parse({ depth, maxDepth, position: layerPosition(depth, maxDepth), ancestors: [] });
 
@@ -28,11 +31,16 @@ async function main(): Promise<void> {
   const constructor = createNodeConstructor({
     expand: createExpandAgent({ generate }).expand,
     verify: verifyExpansion,
-    consolidate: createConsolidatorAgent({ generate }).consolidate,
     logger: createLogger(),
   });
 
-  const output = await constructor.construct({ topic: topic.trim(), context });
+  // Depth 0 exercises the ROOT call, which reads the text as a learner's request and names the topic (C100);
+  // any other depth is an interior call, given a placeholder for the brief its parent would have written.
+  const output = await constructor.construct(
+    depth === 0
+      ? { topic: topic.trim(), request: topic.trim(), context }
+      : { topic: topic.trim(), brief: `An overview of ${topic.trim()}.`, context },
+  );
   console.log(JSON.stringify({ position: context.position, childCount: output.children.length, ...output }, null, 2));
 }
 

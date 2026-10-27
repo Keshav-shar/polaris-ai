@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { LLM } from "../../config/constants";
+import { transportFaultCode } from "../../shared/transport-fault";
 
 export type LlmErrorKind = "daily-quota" | "network" | "retryable" | "fatal";
 
@@ -8,7 +9,17 @@ export type LlmErrorClass = {
   status?: number;
   retryAfterMs?: number;
   detail: string;
+  // Set on a daily-quota 429 whose wording names the limit (C119).
+  dailyLimit?: "tokens" | "requests";
+  // Set on a per-minute 429 that states the model's requests/minute limit, which Groq says nowhere else (C130).
+  requestsPerMinuteLimit?: number;
 };
+
+// Groq: "... on tokens per day (TPD): Limit 200000 ..." / "... on requests per day (RPD) ...".
+const TOKENS_PER_DAY = /tokens\s+per\s+day|\bTPD\b/i;
+const REQUESTS_PER_DAY = /requests\s+per\s+day|\bRPD\b|RequestsPerDay/i;
+// Groq: "... on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s."
+const REQUESTS_PER_MINUTE_LIMIT = /requests\s+per\s+minute(?:\s*\(RPM\))?\s*:\s*Limit\s+(\d+)/i;
 
 // The SDK hands us a `Headers` instance, not a plain object, and zod rejects it outright. Normalising
 // first is what keeps `status` readable at all: a single rejected field used to fail the whole parse and
@@ -45,43 +56,10 @@ const PROSE_RETRY_DELAY = /(?:retry|try\s+again)\s+in\s+(\d+(?:\.\d+)?)\s*(ms|s)
 // Providers put a machine-readable reason in `error.code`. Parsed, not cast: `error` is `unknown` here.
 const ErrorCodeShape = z.object({ code: z.string().optional().catch(undefined) });
 
-// A transport fault carries its diagnosis in `cause`, one or two levels down: the OpenAI SDK wraps the
-// real error ("Connection error." + cause), and undici wraps its own ("fetch failed" + cause with a code).
-const CauseShape = z.object({
-  name: z.string().optional().catch(undefined),
-  message: z.string().optional().catch(undefined),
-  code: z.string().optional().catch(undefined),
-  errno: z.number().optional().catch(undefined),
-  cause: z.unknown().optional().catch(undefined),
-});
-
-// Node/undici socket-level codes. `UND_ERR_` covers undici's own family (CONNECT_TIMEOUT, SOCKET, ...).
-const SOCKET_CODE = /^(ECONNRESET|ECONNREFUSED|ECONNABORTED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|EHOSTUNREACH|ENETUNREACH|EHOSTDOWN|ECANCELED|CERT_|UND_ERR_)/;
-
 // The SDK's own classes for "the request never completed". Matched by NAME rather than `instanceof`:
 // `openai` is imported in exactly one adapter, and an instanceof across two copies of a package fails
 // silently - the failure mode this check exists to catch in the first place.
 const CONNECTION_CLASS = /^APIConnection(Timeout)?Error$/;
-
-// The socket code, wherever it is: on the error itself, on any `cause` below it, or spelled out in a
-// message (`connect ECONNREFUSED 127.0.0.1:443`). Bounded walk, because a cause chain is untrusted input.
-function socketCodeIn(text: string): string | undefined {
-  return text.split(/[^A-Z_]+/).find((token) => token.length > 3 && SOCKET_CODE.test(token));
-}
-
-function transportFault(error: unknown): string | undefined {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4 && current !== undefined && current !== null; depth++) {
-    const parsed = CauseShape.safeParse(current);
-    if (!parsed.success) return undefined;
-    const { message, code, cause } = parsed.data;
-    if (code !== undefined && SOCKET_CODE.test(code)) return code;
-    const fromMessage = message === undefined ? undefined : socketCodeIn(message);
-    if (fromMessage !== undefined) return fromMessage;
-    current = cause;
-  }
-  return undefined;
-}
 
 function errorCode(error: unknown): string | undefined {
   const parsed = ErrorCodeShape.safeParse(error);
@@ -130,7 +108,7 @@ export function classifyLlmError(error: unknown): LlmErrorClass {
   // in turn, then counted against the node. It is neither the server's fault nor the node's.
   const className = error instanceof Error ? error.constructor.name : "";
   const isConnectionClass = CONNECTION_CLASS.test(className) || CONNECTION_CLASS.test(shape.name ?? "");
-  const fault = transportFault(error);
+  const fault = transportFaultCode(error);
   if (status === undefined && (isConnectionClass || fault !== undefined)) {
     // The cause is the diagnosis: "Connection error." alone never says whether DNS, the socket or the
     // client timeout gave way.
@@ -144,7 +122,18 @@ export function classifyLlmError(error: unknown): LlmErrorClass {
     // OR, not AND: an exhausted daily quota often asks for a SHORT wait (4s and 37s both observed live),
     // so the wording is the only tell. Requiring both would put the C50 fail-fast back out of reach.
     const daily = (after !== undefined && after > LLM.DAILY_QUOTA_RETRY_AFTER_MS) || DAILY_QUOTA.test(body);
-    return { kind: daily ? "daily-quota" : "retryable", status, retryAfterMs: after, detail };
+    if (!daily) {
+      const rpm = Number(REQUESTS_PER_MINUTE_LIMIT.exec(body)?.[1]);
+      return {
+        kind: "retryable",
+        status,
+        retryAfterMs: after,
+        detail,
+        ...(Number.isInteger(rpm) && rpm > 0 ? { requestsPerMinuteLimit: rpm } : {}),
+      };
+    }
+    const dailyLimit = TOKENS_PER_DAY.test(body) ? "tokens" : REQUESTS_PER_DAY.test(body) ? "requests" : undefined;
+    return { kind: "daily-quota", status, retryAfterMs: after, detail, ...(dailyLimit === undefined ? {} : { dailyLimit }) };
   }
   // Groq's server-side JSON-mode validator rejects the MODEL's own malformed output with a 400
   // `json_validate_failed`, carrying the bad text in `failed_generation` (observed ~1 in 8 on
@@ -162,4 +151,80 @@ export function classifyLlmError(error: unknown): LlmErrorClass {
     return { kind: "retryable", status, detail };
   }
   return { kind: "fatal", status, detail };
+}
+
+// An optional request parameter this model rejects. Each maps to one ChatOptions field the adapter can stop
+// sending for that model, so one rejection costs one request instead of failing every call (C113, C114).
+export type OptionalFeature = "responseSchema" | "reasoningEffort" | "maxCompletionTokens";
+
+// Recorded live 2026-10-07 from Groq: `400 \`reasoning_effort\` must be one of \`low\`, \`medium\`, or
+// \`high\``, and `400 invalid JSON schema for response_format: ...`. Keyed on the PARAMETER NAME in the
+// message, which is what any OpenAI-compatible provider has to say to be understood. A 400
+// `json_validate_failed` is the model's own bad sample (C70), never an unsupported feature.
+const FEATURE_PARAMS: readonly { feature: OptionalFeature; pattern: RegExp }[] = [
+  { feature: "reasoningEffort", pattern: /reasoning_effort/i },
+  { feature: "maxCompletionTokens", pattern: /max_completion_tokens/i },
+  { feature: "responseSchema", pattern: /json_schema|response_format/i },
+];
+
+export function unsupportedFeature(error: unknown): OptionalFeature | undefined {
+  const parsed = ApiErrorShape.safeParse(error);
+  if (!parsed.success || parsed.data.status !== 400) return undefined;
+  if (errorCode(parsed.data.error) === "json_validate_failed") return undefined;
+  const text = `${parsed.data.message ?? ""} ${JSON.stringify(parsed.data.error ?? "")}`;
+  return FEATURE_PARAMS.find(({ pattern }) => pattern.test(text))?.feature;
+}
+
+// What a provider says about a model's per-minute TOKEN budget on every response. On Groq,
+// `x-ratelimit-remaining-tokens` / `x-ratelimit-reset-tokens` are per MINUTE while the `*-requests` pair is per
+// DAY, so only the token pair is read for pacing (C130).
+// `limitTokens` (the bucket's size) is optional: with it the pacer can model the refill, without it it waits
+// for the full reset.
+export type RateHeaders = { remainingTokens: number; resetTokensMs: number; limitTokens?: number };
+
+// Groq writes durations as "7.66s", "2m59.56s", "1h2m3s" or "120ms".
+const DURATION_PART = /(\d+(?:\.\d+)?)(ms|h|m|s)/gi;
+const UNIT_MS: Readonly<Record<string, number>> = { h: 3_600_000, m: 60_000, s: 1_000, ms: 1 };
+
+export function parseDurationMs(raw: string): number | undefined {
+  const text = raw.trim();
+  if (text === "") return undefined;
+  // A bare number is seconds, as `retry-after` is.
+  if (/^\d+(?:\.\d+)?$/.test(text)) return Math.round(Number(text) * 1000);
+  let total = 0;
+  let consumed = 0;
+  for (const match of text.matchAll(DURATION_PART)) {
+    const value = Number(match[1]);
+    const unit = UNIT_MS[match[2]?.toLowerCase() ?? ""];
+    if (!Number.isFinite(value) || unit === undefined) return undefined;
+    total += value * unit;
+    consumed += match[0].length;
+  }
+  // Anything left over means a format this parser does not know; guessing would pace on a wrong number.
+  return consumed === text.length ? Math.round(total) : undefined;
+}
+
+// Parsed, not cast: headers cross a trust boundary like the body does. Undefined unless BOTH are readable.
+export function parseRateHeaders(headers: unknown): RateHeaders | undefined {
+  const parsed = HeaderBag.safeParse(headers);
+  const bag = parsed.success ? parsed.data : undefined;
+  const remainingTokens = headerNumber(bag, "x-ratelimit-remaining-tokens");
+  const reset = bag?.["x-ratelimit-reset-tokens"];
+  const resetTokensMs = typeof reset === "string" ? parseDurationMs(reset) : undefined;
+  if (remainingTokens === undefined || remainingTokens < 0 || resetTokensMs === undefined) return undefined;
+  const limitTokens = headerNumber(bag, "x-ratelimit-limit-tokens");
+  return {
+    remainingTokens,
+    resetTokensMs,
+    ...(limitTokens !== undefined && limitTokens >= remainingTokens && limitTokens > 0 ? { limitTokens } : {}),
+  };
+}
+
+const WithHeaders = z.object({ headers: z.unknown() });
+
+// The same snapshot from a failed request: Groq sends its rate headers with a 429 too, and that is exactly the
+// moment the pacer most needs them.
+export function rateHeadersOfError(error: unknown): RateHeaders | undefined {
+  const parsed = WithHeaders.safeParse(error);
+  return parsed.success ? parseRateHeaders(parsed.data.headers) : undefined;
 }

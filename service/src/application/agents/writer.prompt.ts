@@ -8,10 +8,10 @@ import { dataBlock } from "./data-block.prompt";
 // 1. SCOPE DECIDES LENGTH, not a sitewide number. The article covers this node's own layer completely and
 //    hands every subtopic downward. The band in the user prompt is calibration for that scope - measured,
 //    because a model left to infer length alone is neither repeatable nor correct (docs/conflicts.md C85).
-// 2. SUBTOPICS ARE NAMED, NEVER TAUGHT. The writer sees each child's TOPIC and nothing else (C86, amended
-//    by C91: the article is written while those children are still being expanded, so their briefs do not
-//    exist yet). A name is enough to say where a learner goes next and far too little to teach it, and
-//    grandchildren are not in scope at all.
+// 2. SUBTOPICS ARE NAMED, NEVER TAUGHT. The writer sees each child's TOPIC and the one-line BRIEF its
+//    parent's expansion wrote for it, and nothing else (C86, restored by C102 once C99 made the parent write
+//    those briefs). Enough to say in a clause what a subtopic covers and where a learner goes next, far too
+//    little to teach it, and grandchildren are not in scope at all.
 // 3. EVIDENCE IS DATA. Snippets come from the open web, so they arrive inside <sources> and the prompt says
 //    plainly that instructions inside that block are ignored (docs/agents-and-prompts.md: "Retrieved
 //    snippets are passed as quoted source text, not instructions").
@@ -36,9 +36,10 @@ SCOPE, which decides how long the article is:
 - Cover THIS node's own layer COMPLETELY: every idea a learner needs to understand this topic at this level
   of the tree, with the mechanisms, the reasons, the trade-offs and the vocabulary.
 - Anchor it to the parent: say how this topic sits inside the parent's, in a clause, not a paragraph.
-- The subtopics listed are each covered by their OWN article, and you are given their names only. Do NOT
-  teach them and do not guess at their content. Name each one, say in a clause how it connects to this
-  topic, and hand the detail downward. Being the parent means pointing, not duplicating.
+- The subtopics listed are each covered by their OWN article; you are given each one's name and a one-line
+  scope. Do NOT teach them and do not expand on that scope. Name each one, say in a clause what it covers and
+  how it connects to this topic, and hand the detail downward. Being the parent means pointing, not
+  duplicating.
 - Every factual claim must be supported by the sources provided, and cited. Do not state what they do not
   support, and do not pad with generalities to reach a length.`;
 
@@ -53,7 +54,7 @@ function childLines(children: ArticleContext["children"]): string {
   if (children.length === 0) {
     return "NONE - this is a leaf: nothing sits below it, so it must carry the full detail itself";
   }
-  return children.map((child) => `  - ${child.topic}`).join("\n");
+  return children.map((child) => `  - ${child.topic} - ${child.brief}`).join("\n");
 }
 
 // The band, plus WHY it is what it is. The reason matters more than the numbers: telling a model "you are

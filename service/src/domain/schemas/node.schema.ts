@@ -1,18 +1,7 @@
 // Relative imports only: ui/ type-checks this file, and there `@/` points at ui/src (docs/conflicts.md C41).
 import { z } from "zod";
-import {
-  ANCESTOR_WINDOW,
-  BRIEF_MAX_WORDS,
-  DEFAULT_MAX_DEPTH,
-  MAX_DEPTH_CEILING,
-} from "../../config/constants";
+import { ANCESTOR_WINDOW, BRIEF_MAX_WORDS, TOPIC_MAX_CHARS } from "../../config/constants";
 import { countWords } from "../../shared/words";
-
-export const ParsedRequest = z.object({
-  topic: z.string().trim().min(1),
-  maxDepth: z.number().int().min(1).max(MAX_DEPTH_CEILING).default(DEFAULT_MAX_DEPTH),
-});
-export type ParsedRequest = z.infer<typeof ParsedRequest>;
 
 export const LayerPosition = z.enum(["normal", "taper", "leaf"]);
 export type LayerPosition = z.infer<typeof LayerPosition>;
@@ -41,16 +30,39 @@ export const Brief = z
   });
 export type Brief = z.infer<typeof Brief>;
 
-// LLM output of the expander. Children must be [] at the leaf layer (enforced by the verifier).
-export const ExpandOutput = z.object({
-  brief: Brief,
-  children: z.array(z.string()),
-});
+// A topic as a node carries it: trimmed, non-empty and bounded, so model output cannot inflate every prompt
+// below it (docs/conflicts.md C103).
+export const Topic = z.string().trim().min(1).max(TOPIC_MAX_CHARS);
+export type Topic = z.infer<typeof Topic>;
+
+// One child as its PARENT writes it: the parent names the subtopic and scopes it in a brief, so the child
+// never spends a call on its own brief and a final-layer child is never called at all (docs/conflicts.md C99).
+export const ChildDraft = z.object({ topic: Topic, brief: Brief });
+export type ChildDraft = z.infer<typeof ChildDraft>;
+
+// RAW LLM output, deliberately lenient per child: a single bad child is DROPPED by the verifier rather than
+// failing the parse, because a failed parse costs a repair request (docs/conflicts.md C99).
+const RawChild = z.object({ topic: z.string(), brief: z.string() });
+
+// Interior expansion: the node's own brief came from its parent, so only children are asked for.
+export const ExpandOutput = z.object({ children: z.array(RawChild) });
 export type ExpandOutput = z.infer<typeof ExpandOutput>;
+
+// Root expansion. It absorbed the parser (docs/conflicts.md C100): it reads the learner's raw request and
+// names the topic, writes the root's brief, and its children - one call where there used to be two.
+export const RootExpandOutput = z.object({ topic: z.string(), brief: z.string(), children: z.array(RawChild) });
+export type RootExpandOutput = z.infer<typeof RootExpandOutput>;
+
+// Either reply, before verification. The verifier is the only consumer.
+export type RawExpansion = ExpandOutput & Partial<Pick<RootExpandOutput, "topic" | "brief">>;
+
+// A VERIFIED expansion, as the constructor returns it and the cache stores it. `topic` and `brief` are set
+// for the root only; every other node's brief arrives with its construct message.
+export type Expansion = { topic?: Topic; brief?: Brief; children: ChildDraft[] };
 
 // What the API returns to the UI. EVERY known node is returned, whatever its status, so a run that stops
 // early still shows the tree it managed to build (docs/conflicts.md C54).
-// `pending` = known but not yet expanded (brief is ""), `expanded` = brief written, children still
+// `pending` = known but not yet expanded, `expanded` = children decided and still
 // building, `done`/`failed` = terminal. `blocked` is DERIVED by the read model for a non-terminal node of
 // a halted run - it is never stored.
 export const TreeNodeStatus = z.enum(["pending", "expanded", "done", "failed", "blocked"]);
@@ -65,7 +77,8 @@ export const TreeNode = z.object({
   id: z.uuid(),
   topic: z.string(),
   depth: z.number().int().min(0),
-  brief: z.string(), // "" until the node has been expanded
+  // Written by the node's PARENT when it is created (C99); "" only for the root until its own call returns.
+  brief: z.string(),
   status: TreeNodeStatus,
   // The ARTICLE's state, which moves independently of `status`: a node is `done` the moment it is
   // expanded, long before its scroll is written. Absent until the article pass reaches it, which is what

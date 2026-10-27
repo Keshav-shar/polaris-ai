@@ -4,7 +4,3 @@
 
 **May depend on:** aws-cdk-lib.
 
-**Must not depend on:** Stack-specific wiring.
-
-**Planned contents:**
-- Add constructs only when a pattern repeats in two stacks.

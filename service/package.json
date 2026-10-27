@@ -8,12 +8,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke:llm": "tsx scripts/smoke-llm.ts",
-    "smoke:parser": "tsx scripts/smoke-parser.ts",
     "smoke:expand": "tsx scripts/smoke-expand.ts",
     "smoke:evidence": "tsx scripts/smoke-evidence.ts",
     "smoke:node": "tsx scripts/smoke-node.ts",
     "consistency": "tsx scripts/consistency-check.ts",
     "model-eval": "tsx scripts/model-eval.ts",
+    "writer-eval": "tsx scripts/writer-eval.ts",
     "docs:check": "tsx scripts/docs-check.ts"
   },
   "dependencies": {

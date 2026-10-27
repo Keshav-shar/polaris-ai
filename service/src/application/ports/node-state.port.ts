@@ -1,10 +1,12 @@
-import type { WriterOutput } from "../../domain/schemas/article.schema";
+import type { ArticleDraft } from "../../domain/schemas/article.schema";
+import type { ChildDraft } from "../../domain/schemas/node.schema";
 import type { NodeState } from "../../domain/schemas/node-state.schema";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 
 export type ClaimRequest = Pick<NodeMessage, "runId" | "nodeId" | "parentId" | "depth">;
 
-export type NodeResult = { brief: string; children: readonly string[] };
+// `topic` is set for the root only: the canonical topic its call named (C100).
+export type NodeResult = { topic?: string; brief: string; children: readonly ChildDraft[] };
 
 export type TerminalStatus = "done" | "failed";
 
@@ -23,7 +25,8 @@ export type NodeStatePort = {
   saveResult(nodeId: string, result: NodeResult): Promise<NodeState>;
 
   // Rule 4. Creates each child as pending only if absent (ids are deterministic), so re-sending children
-  // on a retry is harmless.
+  // on a retry is harmless. Final-layer children are created here too and then completed by their parent
+  // without ever being claimed (C99), which is why `finish` accepts a pending node.
   createPending(messages: readonly NodeMessage[]): Promise<void>;
 
   // Conditional terminal transition. Resolves undefined when the node was already done/failed or is
@@ -49,10 +52,14 @@ export type NodeStatePort = {
 
   // Rule 2, for articles. Write-once: an existing draft is returned as-is rather than overwritten, so two
   // deliveries of the same node can never store different articles or different questions.
-  saveArticle(nodeId: string, article: WriterOutput): Promise<NodeState>;
+  saveArticle(nodeId: string, article: ArticleDraft): Promise<NodeState>;
 
   // The article twin of `finish`, and the reason it exists: resolves undefined when the article was
   // already done/failed, so a redelivery that slipped past claimArticle cannot count articlesDone twice
   // and mark the run `done` before every article is in.
   finishArticle(nodeId: string, status: TerminalStatus): Promise<NodeState | undefined>;
+
+  // Records a learner's boost on the node, so the article message expand-node has not sent yet goes out
+  // boosted (C128). Idempotent; resolves false when the node has no state yet.
+  markBoosted(nodeId: string): Promise<boolean>;
 };

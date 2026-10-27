@@ -67,7 +67,7 @@ describe("createExpansionCacheDep", () => {
 
   it("round-trips an output through the store", async () => {
     const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" });
-    const output = { brief: "b", children: ["one", "two"] };
+    const output = { children: [{ topic: "one", brief: "b1" }, { topic: "two", brief: "b2" }] };
     await dep.put("k", output);
     expect(await dep.get("k")).toEqual(output);
     expect(await dep.get("missing")).toBeUndefined();
@@ -75,9 +75,10 @@ describe("createExpansionCacheDep", () => {
 
   it("hands back a copy, so a caller cannot mutate a stored entry", async () => {
     const cache = createMemoryExpansionCache();
-    await cache.put("k", { brief: "b", children: ["one"] });
+    await cache.put("k", { children: [{ topic: "one", brief: "b" }] });
     const first = await cache.get("k");
-    first?.children.push("injected");
-    expect((await cache.get("k"))?.children).toEqual(["one"]);
+    first?.children.push({ topic: "injected", brief: "x" });
+    if (first?.children[0]) first.children[0].brief = "mutated";
+    expect((await cache.get("k"))?.children).toEqual([{ topic: "one", brief: "b" }]);
   });
 });

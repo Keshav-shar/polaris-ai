@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_CONCURRENT_RUNS, MAX_NODES_PER_RUN, WORKER } from "./constants";
+import { MAX_CONCURRENT_RUNS, MAX_NODES_PER_RUN, REASONING_EFFORTS, WORKER } from "./constants";
 
 export class EnvError extends Error {
   override readonly name = "EnvError";
@@ -32,6 +32,10 @@ const EnvSchema = z
     // appears in no provider model id, where `:` does (OpenRouter's `:free`). Members share the base URL
     // and key, so only ONE account is involved. Leaving this empty keeps single-model behaviour exactly.
     // The vetted list is `docs/models.md`; `npm run model-eval` is what puts a model on it.
+    // An entry may also end in `@effort` (none|low|medium|high): the MOST reasoning that model may be asked
+    // for, e.g. `qwen/qwen3.8-27b=1000@none`. Needed because defaults differ by model - gpt-oss reasons at
+    // `medium` unless told otherwise, qwen not at all - so the per-label `low` saves tokens on one and spends
+    // them on the other (measured 2026-10-07, C113). LLM_MODEL takes the same `@effort` suffix.
     LLM_MODELS: optionalString,
     // The pool the WRITER draws on, when it should differ from the one construction uses. Same format,
     // same account; the lead is this list's first entry, not LLM_MODEL. Unset = the writer shares
@@ -104,8 +108,15 @@ export type Env = z.infer<typeof EnvSchema>;
 
 export type RotationPolicy = "off" | "exhaustion" | "throttle" | "round-robin";
 
-// One rotation member: the model id plus its OWN requests/day when the provider publishes one.
-export type PoolModel = { id: string; dailyRequestBudget: number | undefined };
+export type ReasoningEffortCeiling = (typeof REASONING_EFFORTS)[number];
+
+// One rotation member: the model id plus its OWN requests/day when the provider publishes one, and the
+// most reasoning it may be asked for (C113).
+export type PoolModel = {
+  id: string;
+  dailyRequestBudget: number | undefined;
+  maxReasoningEffort?: ReasoningEffortCeiling | undefined;
+};
 
 export type LlmEnv = {
   baseUrl: string;
@@ -172,9 +183,24 @@ export function getEnv(): Env {
   return cached;
 }
 
-// Parses `id`, `id=rpd`, comma-separated. Split on the LAST `=` so a model id containing one survives.
-// A malformed budget is an error rather than a silent undefined: it would otherwise disable the
-// proactive-retirement it was written to enable, and nothing would say so.
+// Splits a trailing `@effort` off an entry. Validated, because a typo would otherwise silently leave a
+// model reasoning at a cost nobody chose.
+function splitEffort(entry: string, varName: string): { rest: string; effort: ReasoningEffortCeiling | undefined } {
+  const at = entry.lastIndexOf("@");
+  if (at === -1) return { rest: entry, effort: undefined };
+  const effort = entry.slice(at + 1).trim();
+  if (!(REASONING_EFFORTS as readonly string[]).includes(effort)) {
+    throw new EnvError(
+      `${varName}: "${entry}" has an unknown reasoning effort "${effort}". Use one of ` +
+        `${REASONING_EFFORTS.join(", ")} after "@". See docs/models.md.`,
+    );
+  }
+  return { rest: entry.slice(0, at).trim(), effort: effort as ReasoningEffortCeiling };
+}
+
+// Parses `id`, `id=rpd`, `id@effort`, `id=rpd@effort`, comma-separated. Split on the LAST `=` so a model id
+// containing one survives. A malformed budget is an error rather than a silent undefined: it would
+// otherwise disable the proactive-retirement it was written to enable, and nothing would say so.
 function parsePoolModels(raw: string | undefined, varName: string): PoolModel[] {
   if (raw === undefined) return [];
   return raw
@@ -182,17 +208,18 @@ function parsePoolModels(raw: string | undefined, varName: string): PoolModel[] 
     .map((entry) => entry.trim())
     .filter((entry) => entry !== "")
     .map((entry) => {
-      const at = entry.lastIndexOf("=");
-      if (at === -1) return { id: entry, dailyRequestBudget: undefined };
-      const id = entry.slice(0, at).trim();
-      const budget = Number(entry.slice(at + 1).trim());
+      const { rest, effort } = splitEffort(entry, varName);
+      const at = rest.lastIndexOf("=");
+      if (at === -1) return { id: rest, dailyRequestBudget: undefined, maxReasoningEffort: effort };
+      const id = rest.slice(0, at).trim();
+      const budget = Number(rest.slice(at + 1).trim());
       if (id === "" || !Number.isInteger(budget) || budget < 1) {
         throw new EnvError(
-          `${varName}: "${entry}" is malformed. Use "model-id" or "model-id=requestsPerDay" ` +
-            "(a positive integer), comma-separated. See docs/setup.md.",
+          `${varName}: "${entry}" is malformed. Use "model-id", "model-id=requestsPerDay" (a positive ` +
+            'integer) and optionally "@effort", comma-separated. See docs/setup.md.',
         );
       }
-      return { id, dailyRequestBudget: budget };
+      return { id, dailyRequestBudget: budget, maxReasoningEffort: effort };
     });
 }
 
@@ -203,7 +230,8 @@ export function isLlmConfigured(env: Env): boolean {
 export function requireLlmEnv(env: Env): LlmEnv {
   const baseUrl = env.LLM_BASE_URL;
   const apiKey = env.LLM_API_KEY;
-  const model = env.LLM_MODEL;
+  const leadEntry = env.LLM_MODEL === undefined ? undefined : splitEffort(env.LLM_MODEL, "LLM_MODEL");
+  const model = leadEntry?.rest;
   if (!baseUrl || !apiKey || !model) {
     // Names what the user must set, which is the whole point of failing here rather than at the call.
     const missing = (
@@ -219,7 +247,11 @@ export function requireLlmEnv(env: Env): LlmEnv {
   }
   // The lead always heads the pool. Deduped against the lead and each other, first occurrence winning:
   // a repeat is harmless rather than wrong, and config here has no logger to warn through.
-  const lead: PoolModel = { id: model, dailyRequestBudget: env.LLM_DAILY_REQUEST_BUDGET };
+  const lead: PoolModel = {
+    id: model,
+    dailyRequestBudget: env.LLM_DAILY_REQUEST_BUDGET,
+    maxReasoningEffort: leadEntry?.effort,
+  };
   const seen = new Set([model]);
   const extras = parsePoolModels(env.LLM_MODELS, "LLM_MODELS").filter(
     (m) => !seen.has(m.id) && seen.add(m.id),

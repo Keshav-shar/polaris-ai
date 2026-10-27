@@ -21,23 +21,23 @@ describe("ArticleContext", () => {
     expect(ArticleContext.safeParse({ ...context, parent: null }).success).toBe(true);
   });
 
-  it("accepts children as bare topics, which is what lets an article signpost them", () => {
-    // The invariant changed twice: C86 made it "children named, never taught" as topic + brief; C91 cut
-    // the brief, because the article is written while those children are still being expanded.
-    const withKids = { ...context, isLeaf: false, children: [{ topic: "Paging" }] };
+  it("accepts children as topic + brief, which is what lets an article signpost them", () => {
+    // The invariant changed three times: C86 made it "children named, never taught" as topic + brief; C91
+    // cut the brief; C102 restored it once the parent's own call wrote it (C99).
+    const withKids = { ...context, isLeaf: false, children: [{ topic: "Paging", brief: "Fixed-size pages." }] };
     expect(ArticleContext.safeParse(withKids).success).toBe(true);
   });
 
-  it("rejects anything on a child beyond its topic", () => {
-    // THE guard that keeps the relaxation honest: a child's brief, its article, its evidence or its own
-    // children must not be smuggleable into the writer's context.
+  it("rejects anything on a child beyond its topic and brief", () => {
+    // THE guard that keeps the relaxation honest: a child's article, its evidence or its own children
+    // must not be smuggleable into the writer's context.
     const smuggled = (child: Record<string, unknown>) =>
       ArticleContext.safeParse({ ...context, isLeaf: false, children: [child] }).success;
-    expect(smuggled({ topic: "t" })).toBe(true);
-    expect(smuggled({ topic: "t", brief: "b" })).toBe(false);
-    expect(smuggled({ topic: "t", contentMd: "the child's whole article" })).toBe(false);
-    expect(smuggled({ topic: "t", children: [{ topic: "grandchild" }] })).toBe(false);
-    expect(smuggled({ topic: "t", evidence: [] })).toBe(false);
+    expect(smuggled({ topic: "t", brief: "b" })).toBe(true);
+    expect(smuggled({ topic: "t" })).toBe(false);
+    expect(smuggled({ topic: "t", brief: "b", contentMd: "the child's whole article" })).toBe(false);
+    expect(smuggled({ topic: "t", brief: "b", children: [{ topic: "grandchild" }] })).toBe(false);
+    expect(smuggled({ topic: "t", brief: "b", evidence: [] })).toBe(false);
     expect(smuggled({})).toBe(false);
   });
 

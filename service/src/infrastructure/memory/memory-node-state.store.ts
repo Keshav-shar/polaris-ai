@@ -1,5 +1,5 @@
 import type { ClaimRequest, NodeResult, NodeStatePort, TerminalStatus } from "../../application/ports/node-state.port";
-import type { WriterOutput } from "../../domain/schemas/article.schema";
+import type { ArticleDraft } from "../../domain/schemas/article.schema";
 import type { NodeState } from "../../domain/schemas/node-state.schema";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
 
@@ -14,6 +14,9 @@ function copy(state: NodeState): NodeState {
   return {
     ...state,
     completedChildIds: [...state.completedChildIds],
+    ...(state.result === undefined
+      ? {}
+      : { result: { ...state.result, children: state.result.children.map((child) => ({ ...child })) } }),
     // The stored draft is write-once, so handing out the same array would let a caller edit history.
     ...(state.article === undefined
       ? {}
@@ -64,7 +67,11 @@ export function createMemoryNodeStateStore(): NodeStatePort {
       // node can never disagree about the child set.
       if (state.result !== undefined || TERMINAL.includes(state.status)) return copy(state);
       // Rule 3: result + expectedChildren + status in one write, before any child message exists.
-      state.result = { brief: result.brief, children: [...result.children] };
+      state.result = {
+        ...(result.topic === undefined ? {} : { topic: result.topic }),
+        brief: result.brief,
+        children: result.children.map((child) => ({ ...child })),
+      };
       state.expectedChildren = result.children.length;
       state.status = "expanded";
       return copy(state);
@@ -109,7 +116,7 @@ export function createMemoryNodeStateStore(): NodeStatePort {
       return copy(state);
     },
 
-    async saveArticle(nodeId, article: WriterOutput) {
+    async saveArticle(nodeId, article: ArticleDraft) {
       const state = items.get(nodeId);
       if (state === undefined) throw new Error(`saveArticle: node ${nodeId} does not exist`);
       // Rule 2: an existing draft is never overwritten - a retry reuses it, so two deliveries can never
@@ -121,6 +128,13 @@ export function createMemoryNodeStateStore(): NodeStatePort {
         ...(article.questions === undefined ? {} : { questions: [...article.questions] }),
       };
       return copy(state);
+    },
+
+    async markBoosted(nodeId) {
+      const state = items.get(nodeId);
+      if (state === undefined) return false;
+      state.boosted = true;
+      return true;
     },
 
     async finishArticle(nodeId, status: TerminalStatus) {

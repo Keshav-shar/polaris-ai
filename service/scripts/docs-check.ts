@@ -69,6 +69,17 @@ const RETIRED: readonly { text: string; why: string }[] = [
   { text: "polaris-implementation-plan.md", why: "archived; point at docs/archive/ (C97)" },
   { text: "quiz.prompt.ts", why: "no separate quiz agent exists (C74)" },
   { text: "failover.adapter.ts", why: "deleted with the second provider (C93)" },
+  { text: "parser.agent.ts", why: "no parser; the root expansion names the topic (C100)" },
+  { text: "smoke:parser", why: "deleted with the parser (C100)" },
+  { text: "consolidator.agent.ts", why: "no consolidator; trimmed in teaching order (C101)" },
+  { text: "estimate-expand-calls", why: "replaced by estimate-calls.ts (C99)" },
+  { text: "estimateExpandCalls", why: "replaced by estimateCalls (C99)" },
+  { text: "llmKeys", why: "replaced by secretValues (C103)" },
+  { text: "1 + 2N", why: "the budget is I + N since C99/C100" },
+  { text: "leaves included", why: "the final layer is never called (C99)" },
+  { text: "empty children list", why: "the final layer is never called (C99)" },
+  { text: "stubbed until after the MVP", why: "groundedness is live since 10.9 (C124)" },
+  { text: "`skipped` stub", why: "groundedness is live since 10.9 (C124)" },
 ];
 
 const SKIP_DIRS = new Set(["node_modules", ".next", ".git", "archive", "dist"]);

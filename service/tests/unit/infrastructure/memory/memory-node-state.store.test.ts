@@ -4,7 +4,7 @@ import { rootConstructMessage, childConstructMessage } from "../../../../src/app
 import { createMemoryNodeStateStore } from "../../../../src/infrastructure/memory/memory-node-state.store";
 
 const runId = "11111111-1111-4111-8111-111111111111";
-const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2 });
+const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
 const claimRoot = { runId, nodeId: root.nodeId, parentId: null, depth: 0 };
 
 describe("memory node state store", () => {
@@ -30,23 +30,23 @@ describe("memory node state store", () => {
 
   it("rule 3: result, expectedChildren and status are written together", async () => {
     await store.claim(claimRoot);
-    const saved = await store.saveResult(root.nodeId, { brief: "b", children: ["a", "b", "c"] });
+    const saved = await store.saveResult(root.nodeId, { brief: "b", children: [{ topic: "a", brief: "b" }, { topic: "b", brief: "b" }, { topic: "c", brief: "b" }] });
     expect(saved.status).toBe("expanded");
     expect(saved.expectedChildren).toBe(3);
-    expect(saved.result).toEqual({ brief: "b", children: ["a", "b", "c"] });
+    expect(saved.result).toEqual({ brief: "b", children: [{ topic: "a", brief: "b" }, { topic: "b", brief: "b" }, { topic: "c", brief: "b" }] });
   });
 
   it("rule 2: an existing result is reused, never overwritten", async () => {
     await store.claim(claimRoot);
-    await store.saveResult(root.nodeId, { brief: "first", children: ["a"] });
-    const second = await store.saveResult(root.nodeId, { brief: "second", children: ["x", "y"] });
+    await store.saveResult(root.nodeId, { brief: "first", children: [{ topic: "a", brief: "b" }] });
+    const second = await store.saveResult(root.nodeId, { brief: "second", children: [{ topic: "x", brief: "b" }, { topic: "y", brief: "b" }] });
     // The stored value wins, so two deliveries can never disagree about the child set.
-    expect(second.result).toEqual({ brief: "first", children: ["a"] });
+    expect(second.result).toEqual({ brief: "first", children: [{ topic: "a", brief: "b" }] });
     expect(second.expectedChildren).toBe(1);
   });
 
   it("rule 4: createPending never disturbs an existing node", async () => {
-    const child = childConstructMessage(root, "b", "light reactions");
+    const child = childConstructMessage(root, "b", { topic: "light reactions", brief: "child brief" });
     await store.createPending([child]);
     await store.claim({ runId, nodeId: child.nodeId, parentId: root.nodeId, depth: 1 });
     await store.saveResult(child.nodeId, { brief: "b", children: [] });
@@ -66,7 +66,7 @@ describe("memory node state store", () => {
 
   it("rule 5: a child is counted exactly once, whatever its outcome", async () => {
     await store.claim(claimRoot);
-    await store.saveResult(root.nodeId, { brief: "b", children: ["a", "b"] });
+    await store.saveResult(root.nodeId, { brief: "b", children: [{ topic: "a", brief: "b" }, { topic: "b", brief: "b" }] });
     const first = await store.recordChildCompletion(root.nodeId, "child-1", "done");
     expect(first?.completedChildren).toBe(1);
     // A redelivered completion must not advance the counter.
@@ -79,7 +79,7 @@ describe("memory node state store", () => {
 
   it("returns copies, so a caller cannot mutate stored state", async () => {
     await store.claim(claimRoot);
-    await store.saveResult(root.nodeId, { brief: "b", children: ["a"] });
+    await store.saveResult(root.nodeId, { brief: "b", children: [{ topic: "a", brief: "b" }] });
     const state = await store.recordChildCompletion(root.nodeId, "child-1", "done");
     state?.completedChildIds.push("forged");
     const fresh = await store.recordChildCompletion(root.nodeId, "child-2", "done");
@@ -88,5 +88,16 @@ describe("memory node state store", () => {
 
   it("throws when saveResult targets a node that was never claimed", async () => {
     await expect(store.saveResult(root.nodeId, { brief: "b", children: [] })).rejects.toThrow(/does not exist/);
+  });
+});
+
+describe("memory node state store, boost (C128)", () => {
+  it("records a boost on an existing node, idempotently, and reports a missing one", async () => {
+    const store = createMemoryNodeStateStore();
+    await expect(store.markBoosted(root.nodeId)).resolves.toBe(false);
+    await store.claim(claimRoot);
+    await expect(store.markBoosted(root.nodeId)).resolves.toBe(true);
+    await expect(store.markBoosted(root.nodeId)).resolves.toBe(true);
+    expect((await store.claim(claimRoot)).boosted).toBe(true);
   });
 });

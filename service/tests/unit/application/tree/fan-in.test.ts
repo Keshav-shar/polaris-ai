@@ -7,9 +7,9 @@ import { createMemoryRunStateStore } from "../../../../src/infrastructure/memory
 import { createMemoryTreeRepository } from "../../../../src/infrastructure/memory/memory-tree.repository";
 
 const runId = "11111111-1111-4111-8111-111111111111";
-const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2 });
-const light = childConstructMessage(root, "root brief", "light reactions");
-const calvin = childConstructMessage(root, "root brief", "calvin cycle");
+const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
+const light = childConstructMessage(root, "root brief", { topic: "light reactions", brief: "child brief" });
+const calvin = childConstructMessage(root, "root brief", { topic: "calvin cycle", brief: "child brief" });
 
 // Built on the real memory stores: fan-in is only correct if the conditional writes underneath it are.
 function setup() {
@@ -24,7 +24,7 @@ function setup() {
 // Expands the root with two children, leaving both children pending.
 async function expandRoot(nodeState: ReturnType<typeof createMemoryNodeStateStore>) {
   await nodeState.claim({ runId, nodeId: root.nodeId, parentId: null, depth: 0 });
-  await nodeState.saveResult(root.nodeId, { brief: "root brief", children: ["light reactions", "calvin cycle"] });
+  await nodeState.saveResult(root.nodeId, { brief: "root brief", children: [{ topic: "light reactions", brief: "b" }, { topic: "calvin cycle", brief: "b" }] });
   await nodeState.createPending([light, calvin]);
 }
 
@@ -81,12 +81,12 @@ describe("fan-in", () => {
   it("cascades several levels in one call", async () => {
     const deep = setup();
     await deep.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
-    const grandchild = childConstructMessage(light, "light brief", "photosystem ii");
+    const grandchild = childConstructMessage(light, "light brief", { topic: "photosystem ii", brief: "child brief" });
     await deep.nodeState.claim({ runId, nodeId: root.nodeId, parentId: null, depth: 0 });
-    await deep.nodeState.saveResult(root.nodeId, { brief: "b", children: ["light reactions"] });
+    await deep.nodeState.saveResult(root.nodeId, { brief: "b", children: [{ topic: "light reactions", brief: "b" }] });
     await deep.nodeState.createPending([light]);
     await deep.nodeState.claim({ runId, nodeId: light.nodeId, parentId: root.nodeId, depth: 1 });
-    await deep.nodeState.saveResult(light.nodeId, { brief: "b", children: ["photosystem ii"] });
+    await deep.nodeState.saveResult(light.nodeId, { brief: "b", children: [{ topic: "photosystem ii", brief: "b" }] });
     await deep.nodeState.createPending([grandchild]);
 
     // One completion at the bottom finishes the leaf, its parent and the root.
@@ -127,6 +127,21 @@ describe("fan-in", () => {
     await fanIn.completeConstruction(light.nodeId, "done");
     await fanIn.completeConstruction(calvin.nodeId, "done");
     expect((await ctx.runRepo.get(runId))?.status).toBe("done");
+  });
+
+  // C120, found live 2026-10-07: the writer pool ran out of tokens/day and the article worker HALTED the run,
+  // but construction still had quota, finished, and the root's completion overwrote `halted` with
+  // `constructed` - a run that can never reach `done`, which the UI then polls forever.
+  it("never resurrects a run another path already halted or failed when the root completes", async () => {
+    for (const terminal of ["halted", "failed"] as const) {
+      const fresh = setup();
+      await fresh.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
+      await expandRoot(fresh.nodeState);
+      await fresh.runRepo.setStatus(runId, terminal, "LLM daily quota exhausted (tokens per day)");
+      await fresh.fanIn.completeConstruction(light.nodeId, "done");
+      await fresh.fanIn.completeConstruction(calvin.nodeId, "done");
+      expect((await fresh.runRepo.get(runId))?.status).toBe(terminal);
+    }
   });
 
   it("is a no-op for a node that is already terminal", async () => {

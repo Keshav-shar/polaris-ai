@@ -14,6 +14,10 @@ export function createMemoryRunRepository(): RunRepositoryPort {
       run.status = status;
       if (haltReason !== undefined) run.haltReason = haltReason;
     },
+    async setTopic(runId: string, topic: string) {
+      const run = runs.get(runId);
+      if (run !== undefined) run.topic = topic;
+    },
     async countActive() {
       let active = 0;
       for (const run of runs.values()) if (run.status === "constructing") active += 1;

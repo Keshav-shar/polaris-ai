@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { WriterOutput } from "./article.schema";
-import { Brief } from "./node.schema";
+import { ArticleDraft } from "./article.schema";
+import { Brief, ChildDraft, Topic } from "./node.schema";
 
 // In-flight build state: the DynamoDB `PolarisNodes` item shape (in-memory record locally).
 export const NodeStatus = z.enum(["pending", "in_progress", "expanded", "done", "failed"]);
@@ -16,7 +16,9 @@ export const NodeState = z.object({
   depth: z.number().int().min(0),
   status: NodeStatus,
   attempts: z.number().int().min(0),
-  result: z.object({ brief: Brief, children: z.array(z.string()) }).optional(), // written once
+  // Written once. Each child carries the brief its parent wrote for it (C99); `topic` is the canonical
+  // topic the ROOT call named (C100), kept so a redelivered root reuses it instead of the raw request.
+  result: z.object({ topic: Topic.optional(), brief: Brief, children: z.array(ChildDraft) }).optional(),
   expectedChildren: z.number().int().min(0).optional(),
   completedChildren: z.number().int().min(0).default(0),
   completedChildIds: z.array(z.uuid()).default([]), // String Set in DynamoDB
@@ -27,7 +29,10 @@ export const NodeState = z.object({
   // storing only the article would make a retry regenerate the questions. Present in
   // docs/data-model.md's DynamoDB item all along; amendment A2 and C38 omitted it, which is the
   // doc-vs-doc gap C77 records.
-  article: WriterOutput.optional(),
+  article: ArticleDraft.optional(),
+  // A learner boosted this node before its article message existed; expand-node sends that message boosted
+  // (C128). Set-only.
+  boosted: z.literal(true).optional(),
 });
 export type NodeState = z.infer<typeof NodeState>;
 

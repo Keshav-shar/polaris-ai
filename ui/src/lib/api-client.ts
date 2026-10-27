@@ -137,8 +137,8 @@ export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   return body;
 }
 
-// maxDepth is optional and can only LOWER what the parser infers; the run's hard ceiling stays
-// MAX_NODES_PER_RUN, which no request can raise (docs/conflicts.md C62).
+// maxDepth is optional: omitted, the service uses the depth stated in the prompt, else its default. Either
+// way the run's hard ceiling stays MAX_NODES_PER_RUN, which no request can raise (docs/conflicts.md C62, C100).
 export async function startTree(
   prompt: string,
   maxDepth?: number,

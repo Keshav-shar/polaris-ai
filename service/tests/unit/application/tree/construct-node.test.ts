@@ -5,108 +5,88 @@ import { seedFor } from "../../../../src/application/tree/seed";
 import { createExpansionCacheDep } from "../../../../src/application/tree/expansion-cache";
 import { EXPAND } from "../../../../src/config/constants";
 import { createMemoryExpansionCache } from "../../../../src/infrastructure/memory/memory-expansion-cache.store";
-import type { ExpandOutput, NodeContext } from "../../../../src/domain/schemas/node.schema";
+import type { NodeContext, RawExpansion } from "../../../../src/domain/schemas/node.schema";
 import { fakeLogger } from "../../../fixtures/fake-generate";
 
-const context: NodeContext = { depth: 0, maxDepth: 2, position: "normal", ancestors: [] };
-const topics = (n: number) => Array.from({ length: n }, (_, i) => `Topic ${i + 1}`);
+const context: NodeContext = { depth: 1, maxDepth: 3, position: "normal", ancestors: [] };
+const drafts = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ topic: `Topic ${i + 1}`, brief: `What topic ${i + 1} covers.` }));
 
-function setup(output: ExpandOutput, consolidate: (children: readonly string[]) => Promise<string[]>) {
+function setup(output: RawExpansion) {
   const { logger, warnings } = fakeLogger();
-  let consolidateCalls = 0;
+  let expandCalls = 0;
   const constructor = createNodeConstructor({
-    expand: async () => output,
-    verify: verifyExpansion,
-    consolidate: async ({ children }) => {
-      consolidateCalls++;
-      return consolidate(children);
+    expand: async () => {
+      expandCalls++;
+      return output;
     },
+    verify: verifyExpansion,
     logger,
   });
-  return { constructor, warnings, calls: () => consolidateCalls };
+  return { constructor, warnings, calls: () => expandCalls };
 }
 
 describe("createNodeConstructor", () => {
-  it("does not consolidate at or under the cap", async () => {
-    const { constructor, calls } = setup({ brief: "b", children: topics(EXPAND.MAX_CHILDREN) }, async () => []);
-    const out = await constructor.construct({ topic: "Root", context });
-    expect(out.children).toHaveLength(EXPAND.MAX_CHILDREN);
-    expect(calls()).toBe(0);
+  it("makes exactly one expand call and returns each child with its brief", async () => {
+    const { constructor, calls } = setup({ children: drafts(3) });
+    const out = await constructor.construct({ topic: "Root", brief: "Root brief.", context });
+    expect(calls()).toBe(1);
+    expect(out).toEqual({ children: drafts(3) });
   });
 
-  it("consolidates once when over the cap", async () => {
-    const { constructor, calls } = setup({ brief: "b", children: topics(20) }, async (c) => c.slice(0, 8));
+  // C101: there is no consolidator any more, so an over-long list costs no second call - it is cut in the
+  // model's teaching order, keeping the most fundamental subtopics.
+  it("trims over EXPAND.MAX_CHILDREN in teaching order, with no second call", async () => {
+    const { constructor, calls, warnings } = setup({ children: drafts(EXPAND.MAX_CHILDREN + 5) });
     const out = await constructor.construct({ topic: "Root", context });
     expect(calls()).toBe(1);
-    expect(out.children).toEqual(topics(8));
+    expect(out.children).toEqual(drafts(EXPAND.MAX_CHILDREN));
+    expect(warnings.map((w) => w.msg)).toEqual(["children over the cap trimmed"]);
   });
 
-  it("counts the cap after dedupe, so duplicates alone never trigger consolidation", async () => {
-    const children = [...topics(10), ...topics(10).map((t) => t.toUpperCase())];
-    const { constructor, calls } = setup({ brief: "b", children }, async () => []);
-    expect((await constructor.construct({ topic: "Root", context })).children).toHaveLength(10);
-    expect(calls()).toBe(0);
-  });
-
-  it("falls back to the first MAX_CHILDREN children and warns when the consolidator fails", async () => {
-    const { constructor, warnings } = setup({ brief: "b", children: topics(20) }, () =>
-      Promise.reject(new Error("LLM down")),
-    );
+  it("drops a child with an invalid brief and logs it, rather than spending a repair call", async () => {
+    const children = [...drafts(2), { topic: "Bad", brief: "word ".repeat(60) }];
+    const { constructor, calls, warnings } = setup({ children });
     const out = await constructor.construct({ topic: "Root", context });
-    expect(out.children).toEqual(topics(EXPAND.MAX_CHILDREN));
-    expect(warnings.map((w) => w.msg)).toEqual(["consolidator fallback"]);
+    expect(calls()).toBe(1);
+    expect(out.children).toEqual(drafts(2));
+    expect(warnings.map((w) => w.msg)).toEqual(["invalid children dropped"]);
   });
 
-  it("returns [] at the leaf without consolidating, and logs the stripped children", async () => {
-    const { constructor, calls, warnings } = setup({ brief: "b", children: topics(20) }, async () => []);
-    const out = await constructor.construct({ topic: "Root", context: { ...context, depth: 2, position: "leaf" } });
-    expect(out.children).toEqual([]);
-    expect(calls()).toBe(0);
-    expect(warnings.map((w) => w.msg)).toEqual(["leaf rule stripped children"]);
+  it("names the topic and writes the brief on the root call", async () => {
+    const { constructor } = setup({ topic: "Photosynthesis", brief: "How plants make sugar.", children: drafts(2) });
+    const out = await constructor.construct({
+      topic: "teach me photosynthesis",
+      request: "teach me photosynthesis",
+      context: { ...context, depth: 0 },
+    });
+    expect(out).toEqual({ topic: "Photosynthesis", brief: "How plants make sugar.", children: drafts(2) });
   });
 
-  it("derives one seed from seedKey for both LLM calls, and none without a key", async () => {
+  it("derives the seed from seedKey, and none without a key", async () => {
     const seeds: (number | undefined)[] = [];
     const constructor = createNodeConstructor({
       expand: async ({ seed }) => {
         seeds.push(seed);
-        return { brief: "b", children: topics(20) };
+        return { children: drafts(2) };
       },
       verify: verifyExpansion,
-      consolidate: async ({ children, seed }) => {
-        seeds.push(seed);
-        return children.slice(0, 3);
-      },
       logger: fakeLogger().logger,
     });
     await constructor.construct({ topic: "Root", context, seedKey: "node-1" });
     await constructor.construct({ topic: "Root", context });
-    expect(seeds[0]).toBe(seedFor("node-1"));
-    expect(seeds[1]).toBe(seedFor("node-1"));
-    expect(seeds.slice(2)).toEqual([undefined, undefined]);
-  });
-
-  it("re-verifies consolidated children (cycle guard, cap)", async () => {
-    const { constructor } = setup({ brief: "b", children: topics(20) }, async () => ["Root", ...topics(20)]);
-    const out = await constructor.construct({ topic: "Root", context });
-    expect(out.children).not.toContain("Root");
-    expect(out.children.length).toBeLessThanOrEqual(EXPAND.MAX_CHILDREN);
+    expect(seeds).toEqual([seedFor("node-1"), undefined]);
   });
 
   describe("expansion cache", () => {
     const cached = (cache = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" })) => {
       let expandCalls = 0;
-      let consolidateCalls = 0;
       const constructor = createNodeConstructor({
         expand: async () => {
           expandCalls++;
-          return { brief: "b", children: topics(22) };
+          return { children: drafts(EXPAND.MAX_CHILDREN + 7) };
         },
         verify: verifyExpansion,
-        consolidate: async ({ children }) => {
-          consolidateCalls++;
-          return children.slice(0, 8);
-        },
         logger: fakeLogger().logger,
         cache,
       });
@@ -114,9 +94,6 @@ describe("createNodeConstructor", () => {
         constructor,
         get expandCalls() {
           return expandCalls;
-        },
-        get consolidateCalls() {
-          return consolidateCalls;
         },
       };
     };
@@ -127,20 +104,36 @@ describe("createNodeConstructor", () => {
       const a = await first.constructor.construct({ topic: "Root", context });
       const second = cached(dep);
       const b = await second.constructor.construct({ topic: "Root", context });
-      // A hit skips the expander AND the consolidator: the whole node costs nothing.
       expect(second.expandCalls).toBe(0);
-      expect(second.consolidateCalls).toBe(0);
       expect(b).toEqual(a);
     });
 
-    it("stores the post-consolidation output, so cached children are the trimmed set", async () => {
+    it("stores the trimmed output, briefs included, so cached children are the kept set", async () => {
       const cache = createMemoryExpansionCache();
       const dep = createExpansionCacheDep({ cache, namespace: "m" });
       const out = await cached(dep).constructor.construct({ topic: "Root", context });
-      expect(out.children).toHaveLength(8);
+      expect(out.children).toHaveLength(EXPAND.MAX_CHILDREN);
       // Identical children across runs is what keeps derived child ids stable (idempotency rule 4).
       const key = dep.keyFor({ topic: "Root", context });
       expect((await cache.get(key))?.children).toEqual(out.children);
+    });
+
+    // Two requests that share their first TOPIC_MAX_CHARS characters share a provisional topic; keyed on that,
+    // the second learner would be served the first one's tree.
+    it("keys the root on the whole request, not the provisional topic cut from it", async () => {
+      const dep = createExpansionCacheDep({ cache: createMemoryExpansionCache(), namespace: "m" });
+      const root = { ...context, depth: 0 };
+      const build = () =>
+        createNodeConstructor({
+          expand: async ({ request }) => ({ topic: request ?? "x", brief: "b", children: drafts(1) }),
+          verify: verifyExpansion,
+          logger: fakeLogger().logger,
+          cache: dep,
+        });
+      const a = await build().construct({ topic: "same prefix", request: "same prefix: cats", context: root });
+      const b = await build().construct({ topic: "same prefix", request: "same prefix: dogs", context: root });
+      expect(a.topic).toBe("same prefix: cats");
+      expect(b.topic).toBe("same prefix: dogs");
     });
 
     it("misses when the namespace differs, rather than serving another provider's answer", async () => {
@@ -158,21 +151,17 @@ describe("createNodeConstructor", () => {
     // under another's key. A pool namespace is constant, so the retry hits.
     it("still hits the cache when a redelivered node is answered by a different pool member", async () => {
       const cache = createMemoryExpansionCache();
-      // Rotates between calls, exactly as a pool's activeModel() does.
       let answeringModel = "member-a";
       const byPool = createExpansionCacheDep({ cache, namespace: () => "pool:0123456789abcdef" });
       const byAnsweringModel = createExpansionCacheDep({ cache, namespace: () => answeringModel });
 
       const keyBefore = byPool.keyFor({ topic: "Root", context });
       const wrongKeyBefore = byAnsweringModel.keyFor({ topic: "Root", context });
-      const first = cached(byPool);
-      const a = await first.constructor.construct({ topic: "Root", context });
+      const a = await cached(byPool).constructor.construct({ topic: "Root", context });
 
       answeringModel = "member-b";
 
-      // Keyed on whoever answered, the retry would look under a different key and pay again...
       expect(byAnsweringModel.keyFor({ topic: "Root", context })).not.toBe(wrongKeyBefore);
-      // ...while the pool namespace is stable, so the redelivery hits.
       expect(byPool.keyFor({ topic: "Root", context })).toBe(keyBefore);
 
       const retry = cached(byPool);
@@ -184,9 +173,8 @@ describe("createNodeConstructor", () => {
     it("warns but still returns the node when the cache write fails", async () => {
       const { logger, warnings } = fakeLogger();
       const constructor = createNodeConstructor({
-        expand: async () => ({ brief: "b", children: topics(2) }),
+        expand: async () => ({ children: drafts(2) }),
         verify: verifyExpansion,
-        consolidate: async ({ children }) => [...children],
         logger,
         cache: {
           keyFor: () => "k",

@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { LLM, TEMPERATURE_BY_LABEL } from "../../config/constants";
+import { LLM, LLM_CALL_PROFILE, TEMPERATURE_BY_LABEL } from "../../config/constants";
 import { StructuredOutputError } from "../../domain/errors/structured-output.error";
-import type { ChatMessage, ChatOptions, LlmPort } from "../ports/llm.port";
+import type { ChatMessage, ChatOptions, ChatPriority, LlmPort } from "../ports/llm.port";
+import { responseSchemaFor } from "./json-schema";
 
 export type JsonExtraction = { ok: true; value: unknown } | { ok: false; error: string };
 
@@ -28,24 +29,39 @@ export type StructuredRequest<S extends z.ZodType> = {
   schema: S;
   system: string;
   user: string;
-  // Names the caller in errors and logs (e.g. "parser").
+  // Names the caller in errors and logs (e.g. "expand", "writer").
   label: string;
   // Defaults to TEMPERATURE_BY_LABEL[label]; the adapter ignores it unless a provider temperature is configured.
   temperature?: number;
   // Sampling seed (e.g. seedFor(nodeId)); the adapter ignores it unless seeding is enabled.
   seed?: number;
+  // Where the call waits for an LLM slot (C129). Every repair attempt keeps it.
+  priority?: ChatPriority;
 };
 
 export type GenerateStructured = <S extends z.ZodType>(request: StructuredRequest<S>) => Promise<z.infer<S>>;
 
 // Transport errors from the port propagate unchanged; only invalid output is repaired.
 export function createStructuredGenerator(llm: LlmPort): GenerateStructured {
-  return async ({ schema, system, user, label, temperature, seed }) => {
+  return async ({ schema, system, user, label, temperature, seed, priority }) => {
     const messages: ChatMessage[] = [
       { role: "system", content: system },
       { role: "user", content: user },
     ];
-    const options: ChatOptions = { json: true, temperature: temperature ?? TEMPERATURE_BY_LABEL[label], seed };
+    // Everything a call needs that depends only on WHO is calling lives in config/constants.ts, keyed by the
+    // label: temperature (C47), reasoning effort and the runaway cap (C112, C113). The response schema is the
+    // validation schema itself, so the shape the provider enforces can never drift from the one checked (C114).
+    const profile = LLM_CALL_PROFILE[label];
+    const options: ChatOptions = {
+      json: true,
+      temperature: temperature ?? TEMPERATURE_BY_LABEL[label],
+      seed,
+      label,
+      responseSchema: responseSchemaFor(schema, label),
+      ...(priority === undefined ? {} : { priority }),
+      ...(profile === undefined ? {} : { reasoningEffort: profile.reasoningEffort }),
+      ...(profile?.maxCompletionTokens === undefined ? {} : { maxCompletionTokens: profile.maxCompletionTokens }),
+    };
     let lastError = "";
 
     for (let attempt = 0; attempt <= LLM.MAX_REPAIR_ATTEMPTS; attempt++) {

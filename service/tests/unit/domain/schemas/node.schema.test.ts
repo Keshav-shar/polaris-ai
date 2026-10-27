@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   Brief,
+  ChildDraft,
   ExpandOutput,
   NodeContext,
-  ParsedRequest,
+  RootExpandOutput,
   TreeNode,
 } from "../../../../src/domain/schemas/node.schema";
 
@@ -22,17 +23,6 @@ describe("Brief", () => {
   });
 });
 
-describe("ParsedRequest", () => {
-  it("defaults maxDepth to 5 and trims the topic", () => {
-    expect(ParsedRequest.parse({ topic: "  photosynthesis " })).toEqual({ topic: "photosynthesis", maxDepth: 5 });
-  });
-
-  it("rejects depths outside 1..6", () => {
-    expect(ParsedRequest.safeParse({ topic: "x", maxDepth: 0 }).success).toBe(false);
-    expect(ParsedRequest.safeParse({ topic: "x", maxDepth: 7 }).success).toBe(false);
-  });
-});
-
 describe("NodeContext", () => {
   it("accepts at most two ancestors", () => {
     const base = { depth: 3, maxDepth: 5, position: "normal" as const };
@@ -41,10 +31,26 @@ describe("NodeContext", () => {
   });
 });
 
-describe("ExpandOutput", () => {
-  it("validates the brief inside the output", () => {
-    expect(ExpandOutput.safeParse({ brief: words(10), children: ["a"] }).success).toBe(true);
-    expect(ExpandOutput.safeParse({ brief: words(60), children: [] }).success).toBe(false);
+describe("ExpandOutput / RootExpandOutput", () => {
+  it("asks an interior call for children with briefs, and leaves per-child validity to the verifier", () => {
+    expect(ExpandOutput.safeParse({ children: [{ topic: "a", brief: words(10) }] }).success).toBe(true);
+    // Lenient on purpose: one long brief must not fail the parse and cost a repair call (C99).
+    expect(ExpandOutput.safeParse({ children: [{ topic: "a", brief: words(60) }] }).success).toBe(true);
+    // The old shape - bare topic strings - is a different reply and is repaired.
+    expect(ExpandOutput.safeParse({ children: ["a"] }).success).toBe(false);
+  });
+
+  it("asks the root call for a topic and brief as well (C100)", () => {
+    expect(RootExpandOutput.safeParse({ topic: "T", brief: "b", children: [] }).success).toBe(true);
+    expect(RootExpandOutput.safeParse({ brief: "b", children: [] }).success).toBe(false);
+  });
+});
+
+describe("ChildDraft", () => {
+  it("enforces the brief and topic limits a stored child must meet", () => {
+    expect(ChildDraft.safeParse({ topic: "a", brief: words(10) }).success).toBe(true);
+    expect(ChildDraft.safeParse({ topic: "a", brief: words(60) }).success).toBe(false);
+    expect(ChildDraft.safeParse({ topic: " ", brief: "b" }).success).toBe(false);
   });
 });
 

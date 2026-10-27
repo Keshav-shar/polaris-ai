@@ -102,6 +102,25 @@ describe("LLM configuration", () => {
       ]);
     });
 
+    // C113: the most reasoning a model may be asked for, because model defaults differ.
+    it("parses an `@effort` ceiling on a pool entry and on LLM_MODEL", () => {
+      const env = requireLlmEnv(
+        parseEnv({ ...llm, LLM_MODEL: `${llm.LLM_MODEL}@medium`, LLM_MODELS: "b=1000@none,c@low,d=5" }),
+      );
+      expect(env.model).toBe(llm.LLM_MODEL);
+      expect(env.models).toEqual([
+        { id: llm.LLM_MODEL, dailyRequestBudget: undefined, maxReasoningEffort: "medium" },
+        { id: "b", dailyRequestBudget: 1000, maxReasoningEffort: "none" },
+        { id: "c", dailyRequestBudget: undefined, maxReasoningEffort: "low" },
+        { id: "d", dailyRequestBudget: 5, maxReasoningEffort: undefined },
+      ]);
+    });
+
+    it("rejects an unknown effort rather than leaving a model reasoning at a cost nobody chose", () => {
+      expect(() => requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: "b=1000@minimal" }))).toThrow(/reasoning effort/);
+      expect(() => requireLlmEnv(parseEnv({ ...llm, LLM_MODEL: "a@max" }))).toThrow(EnvError);
+    });
+
     it("keeps a model id containing '=' by splitting on the LAST one", () => {
       const env = requireLlmEnv(parseEnv({ ...llm, LLM_MODELS: "vendor/a=b=250" }));
       expect(env.models[1]).toEqual({ id: "vendor/a=b", dailyRequestBudget: 250 });

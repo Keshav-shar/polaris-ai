@@ -1,11 +1,17 @@
 import type { SearchPort } from "../application/ports/search.port";
 import { type Env, EnvError } from "../config/env";
+import { createCachedSearch } from "../infrastructure/search/cached-search.adapter";
 import { createTavilySearch } from "../infrastructure/search/tavily.adapter";
 import { createWikipediaSearch } from "../infrastructure/search/wikipedia.adapter";
 
 // The only place a search adapter is constructed. Wikipedia is the default because it needs no key and no
-// quota beyond identifying itself; Tavily spends a metered monthly credit, so it is opt-in.
+// quota beyond identifying itself; Tavily spends a metered monthly credit, so it is opt-in. Either way it sits
+// behind a bounded cache, so a redelivered article does not search twice (C126).
 export function createSearchFromEnv(env: Env): SearchPort {
+  return createCachedSearch(createProviderSearch(env));
+}
+
+function createProviderSearch(env: Env): SearchPort {
   if (env.SEARCH_PROVIDER === "tavily") {
     // env.ts already refuses SEARCH_PROVIDER=tavily without a key, so this is belt-and-braces for a
     // caller that built an Env by hand.

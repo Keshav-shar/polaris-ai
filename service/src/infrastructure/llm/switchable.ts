@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatOptions, LlmPort } from "../../application/ports/llm.port";
+import type { LlmPort } from "../../application/ports/llm.port";
 
 // An LlmPort that can report WHO answered and WHICH cache namespace its answers belong to. The two are
 // deliberately separate:
@@ -16,13 +16,3 @@ export type SwitchableLlm = LlmPort & {
   activeModel(): string;
   cacheNamespace(): string;
 };
-
-// Wraps a single-model port. Namespace === model, which is exactly the key material used before the split,
-// so no existing cache entry is invalidated and PROMPT_VERSION does not need a bump.
-export function fixedModelLlm(llm: LlmPort, model: string): SwitchableLlm {
-  return {
-    chat: (messages: readonly ChatMessage[], options?: ChatOptions) => llm.chat(messages, options),
-    activeModel: () => model,
-    cacheNamespace: () => model,
-  };
-}

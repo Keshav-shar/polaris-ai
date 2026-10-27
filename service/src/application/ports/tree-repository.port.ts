@@ -10,6 +10,8 @@ export type StoredNode = {
   parentId: string | null;
   topic: string;
   depth: number;
+  // The ltree path the node's messages carry, so a message can be rebuilt from stored rows (C128).
+  path: string;
   brief: string;
   status: StoredNodeStatus;
   articleStatus?: TerminalStatus;
@@ -25,10 +27,11 @@ export type StoredNode = {
 // The permanent tree store: in memory now, Postgres from Phase 12.
 export type TreeRepositoryPort = {
   // Rule 6. Upsert keyed on message.nodeId, so replaying a message changes nothing.
-  // brief null = "not expanded yet": the row appears at its known topic without overwriting a real brief.
+  // brief null = "nothing new": the row appears at its known topic without overwriting a real brief.
   upsertNode(message: NodeMessage, brief: string | null): Promise<void>;
   // Rule 4's companion: the children of an expanded node become visible as `pending` in ONE write, so a
-  // run that stalls still shows the frontier it had already discovered. Never downgrades a known node.
+  // run that stalls still shows the frontier it had already discovered. Each row takes the brief its message
+  // carries - written by the parent (C99). Never downgrades a known node or blanks a brief.
   upsertPending(messages: readonly NodeMessage[]): Promise<void>;
   setStatus(nodeId: string, status: TerminalStatus): Promise<void>;
   // The article axis, recorded alongside construction's status so the read model needs no second

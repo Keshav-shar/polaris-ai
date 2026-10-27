@@ -9,17 +9,22 @@ import { QUIZ_CONFIG } from "../../../../src/config/constants";
 import type { ArticleContext, WriterOutput } from "../../../../src/domain/schemas/article.schema";
 import type { EvidenceItem } from "../../../../src/domain/schemas/evidence.schema";
 import { createMemoryArticleRepository } from "../../../../src/infrastructure/memory/memory-article.repository";
+import { createMemoryEvidenceRepository } from "../../../../src/infrastructure/memory/memory-evidence.repository";
 import { createMemoryQuizStore } from "../../../../src/infrastructure/memory/memory-quiz.store";
 import { buildHarness } from "../../../fixtures/build-harness";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 // maxDepth 1: the root's children are leaves, so construction finishes in one pass over the queue.
-const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1 });
+const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1, request: "photosynthesis" });
 
 const SOURCE_URL = "https://en.wikipedia.org/w/index.php?curid=1";
 
+// Real-shaped source text, so the groundedness check (C124) has something a claim can be checked against.
+const SOURCE_TEXT = "Photosynthesis converts light energy into chemical energy stored in glucose molecules.";
+const GROUNDED_CLAIM = "Photosynthesis converts light energy into chemical energy.";
+
 function source(url = SOURCE_URL, credibility = 0.9): EvidenceItem {
-  return { url, title: "A source", snippet: "a quoted snippet", credibility };
+  return { url, title: "Photosynthesis", snippet: SOURCE_TEXT, credibility };
 }
 
 function questions(url = SOURCE_URL) {
@@ -41,7 +46,7 @@ function fakes(options: { evidence?: EvidenceItem[]; output?: Partial<WriterOutp
   const retrieval: RetrievalAgent = {
     async retrieve() {
       retrievalCalls += 1;
-      return { query: "q", retrievedAt: "2026-09-22T00:00:00.000Z", items: evidence };
+      return { query: "photosynthesis biology", retrievedAt: "2026-09-22T00:00:00.000Z", items: evidence };
     },
   };
   const writer: WriterAgent = {
@@ -50,7 +55,7 @@ function fakes(options: { evidence?: EvidenceItem[]; output?: Partial<WriterOutp
       contexts.push(context);
       return {
         contentMd: "A short article.",
-        citations: [{ url: SOURCE_URL, claim: "a claim" }],
+        citations: [{ url: SOURCE_URL, claim: GROUNDED_CLAIM }],
         questions: questions(),
         ...options.output,
       };
@@ -83,18 +88,21 @@ async function constructed(harnessOptions: Parameters<typeof buildHarness>[0] = 
 function writeArticleFor(h: Awaited<ReturnType<typeof constructed>>, f: ReturnType<typeof fakes>) {
   const articleRepo = createMemoryArticleRepository();
   const quizStore = createMemoryQuizStore();
+  const evidenceRepo = createMemoryEvidenceRepository();
+  const warnings: string[] = [];
   const useCase = createWriteArticle({
     nodeState: h.nodeState,
     treeRepo: h.treeRepo,
     articleRepo,
     quizStore,
+    evidenceRepo,
     retrieval: f.retrieval,
     guardrail: f.guardrail,
     writer: f.writer,
     fanIn: h.fanIn,
-    logger: { warn: () => {} },
+    logger: { warn: (msg: string) => void warnings.push(msg) },
   });
-  return { useCase, articleRepo, quizStore };
+  return { useCase, articleRepo, quizStore, evidenceRepo, warnings };
 }
 
 describe("write-article use-case", () => {
@@ -129,17 +137,21 @@ describe("write-article use-case", () => {
     expect(f.contexts[0]?.isLeaf).toBe(false);
   });
 
-  it("gives the writer nothing about a child beyond its topic", async () => {
-    // The guard that keeps the relaxation honest. A child's brief, its own article and its own children
-    // must stay invisible, or "one node, one slice" collapses and articles start repeating each other.
+  it("gives the writer each child's topic and parent-written brief, and nothing else", async () => {
+    // C102: the brief is back - the parent's own call wrote it (C99), so it exists before this article is
+    // queued - and it is what lets the article say in a clause what each subtopic covers. A child's own
+    // article and its own children must stay invisible, or "one node, one slice" collapses.
     const h = await constructed();
     const f = fakes();
     const { useCase } = writeArticleFor(h, f);
     const [message] = await h.articleQueue.receive(1);
     await useCase.execute(message!.message);
 
-    for (const child of f.contexts[0]?.children ?? []) {
-      expect(Object.keys(child)).toEqual(["topic"]);
+    const children = f.contexts[0]?.children ?? [];
+    expect(children.length).toBeGreaterThan(0);
+    for (const child of children) {
+      expect(Object.keys(child)).toEqual(["topic", "brief"]);
+      expect(child.brief).toBe(`brief for ${child.topic}`);
     }
   });
 
@@ -161,7 +173,7 @@ describe("write-article use-case", () => {
     // to see them - that is what stops it teaching two layers at once.
     const h = buildHarness({ breadth: 2 });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
-    const deepRoot = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2 });
+    const deepRoot = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
     await h.expandNode.execute(deepRoot);
     for (let i = 0; i < 4; i++) {
       const batch = await h.queue.receive(10);
@@ -280,6 +292,86 @@ describe("write-article use-case", () => {
     expect(await quizStore.get(root.nodeId)).toBeUndefined();
   });
 
+  // C118: verified is the GATE's verdict (and at least one citation), not "the writer cited something".
+  it("stores credibilityVerified false when the gate failed, even though the article cites a source", async () => {
+    const h = await constructed();
+    // One credible source: under CREDIBILITY.MIN_CREDIBLE_SOURCES, so the gate fails - but the writer still
+    // cites it, which the old `citations.length > 0` rule called verified.
+    const f = fakes({ evidence: [source()] });
+    const { useCase, articleRepo } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    await useCase.execute(message!.message);
+    expect(await articleRepo.get(root.nodeId)).toMatchObject({ credibilityVerified: false });
+  });
+
+  it("stores credibilityVerified true when the gate passed and the article cites a source", async () => {
+    const h = await constructed();
+    const f = fakes();
+    const { useCase, articleRepo } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    await useCase.execute(message!.message);
+    expect(await articleRepo.get(root.nodeId)).toMatchObject({ credibilityVerified: true });
+  });
+
+  it("keeps the stored verdict on a redelivery that reuses the draft without searching again", async () => {
+    const h = await constructed();
+    const f = fakes({ evidence: [source()] });
+    const { useCase, articleRepo } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    // A crash after the draft was saved but before the article row was written.
+    await h.nodeState.claimArticle(root.nodeId);
+    await h.nodeState.saveArticle(root.nodeId, {
+      contentMd: "A stored draft.",
+      citations: [{ url: SOURCE_URL, claim: GROUNDED_CLAIM }],
+      credibilityVerified: false,
+    });
+    await useCase.execute(message!.message);
+    expect(f.retrievalCalls).toBe(0);
+    expect(await articleRepo.get(root.nodeId)).toMatchObject({ contentMd: "A stored draft.", credibilityVerified: false });
+  });
+
+  // C123: provenance - every source the writer was shown, with the query that found it and when.
+  it("stores the node's evidence with its query and retrieval time before writing", async () => {
+    const h = await constructed();
+    const f = fakes();
+    const { useCase, evidenceRepo } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    await useCase.execute(message!.message);
+    const stored = await evidenceRepo.listForNode(root.nodeId);
+    expect(stored).toHaveLength(2);
+    expect(stored[0]).toMatchObject({
+      nodeId: root.nodeId,
+      retrievalQuery: "photosynthesis biology",
+      retrievedAt: "2026-09-22T00:00:00.000Z",
+    });
+  });
+
+  // C124: a citation whose claim its source does not support is dropped, and with no grounded citation left
+  // the article is not verified - though it is still stored.
+  it("drops an ungrounded citation and marks the article unverified when none is grounded", async () => {
+    const h = await constructed();
+    const f = fakes({ output: { citations: [{ url: SOURCE_URL, claim: "Photosynthesis was discovered by Jan Ingenhousz in 1779." }] } });
+    const { useCase, articleRepo, warnings } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    await useCase.execute(message!.message);
+    expect(await articleRepo.get(root.nodeId)).toMatchObject({ citations: [], credibilityVerified: false });
+    expect(warnings).toContain("citations dropped: not supported by their source");
+  });
+
+  // C125: a quiz a learner would find broken never reaches storage, and costs no extra call.
+  it("drops a quiz with duplicate options", async () => {
+    const h = await constructed();
+    const broken = questions().map((q) => ({ ...q, options: ["a", "A", "c", "d"] }));
+    const f = fakes({ output: { questions: broken } });
+    const { useCase, quizStore, articleRepo, warnings } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    await useCase.execute(message!.message);
+    expect(await quizStore.get(root.nodeId)).toBeUndefined();
+    expect(await articleRepo.get(root.nodeId)).toBeDefined();
+    expect(warnings).toContain("questions dropped: failed the quiz sanity check");
+    expect(f.writerCalls).toBe(1);
+  });
+
   it("hands the writer only the credible subset of the evidence", async () => {
     const h = await constructed();
     const f = fakes({ evidence: [source(), source("https://reddit.com/weak", 0.25)] });
@@ -298,5 +390,29 @@ describe("write-article use-case", () => {
     const orphan = { ...message!.message, nodeId: "22222222-2222-4222-8222-222222222222" };
 
     await expect(useCase.execute(orphan)).rejects.toThrow();
+  });
+});
+
+describe("write-article use-case, boost (C128)", () => {
+  it("tells the writer a boosted message is boosted, so its LLM call jumps the queue too", async () => {
+    const h = await constructed();
+    const base = fakes();
+    const seen: ({ boosted?: boolean } | undefined)[] = [];
+    const f = {
+      ...base,
+      writer: {
+        write: (context: ArticleContext, options?: { boosted?: boolean }) => {
+          seen.push(options);
+          return base.writer.write(context);
+        },
+      },
+    } as ReturnType<typeof fakes>;
+    const { useCase } = writeArticleFor(h, f);
+    const [first, second] = await h.articleQueue.receive(2);
+
+    await useCase.execute({ ...first!.message, boost: true });
+    await useCase.execute(second!.message);
+
+    expect(seen).toEqual([{ boosted: true }, { boosted: false }]);
   });
 });

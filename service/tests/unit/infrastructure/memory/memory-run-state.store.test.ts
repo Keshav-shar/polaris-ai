@@ -16,6 +16,17 @@ describe("memory run state store: reserveNodes", () => {
     expect(await store.get(runId)).toMatchObject({ nodesCreated: 5, nodesSkipped: 5 });
   });
 
+  // C101: the balanced branch cap is passed as `limit`; what it refuses is skipped like a budget refusal.
+  it("grants at most `limit` and counts everything over it as skipped", async () => {
+    const store = createMemoryRunStateStore(100);
+    expect(await store.reserveNodes(runId, 5, 2)).toBe(2);
+    expect(await store.get(runId)).toMatchObject({ nodesCreated: 3, nodesSkipped: 3 });
+    // The budget still binds below the limit.
+    const tight = createMemoryRunStateStore(2);
+    expect(await tight.reserveNodes(runId, 5, 3)).toBe(1);
+    expect(await tight.get(runId)).toMatchObject({ nodesCreated: 2, nodesSkipped: 4 });
+  });
+
   it("counts the root, so the cap is the TOTAL node count and not children only", async () => {
     const store = createMemoryRunStateStore(4);
     expect(await store.reserveNodes(runId, 10)).toBe(3);

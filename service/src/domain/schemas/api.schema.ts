@@ -24,9 +24,9 @@ export type ApiError = z.infer<typeof ApiError>;
 
 export const TreeRequestBody = z.object({
   prompt: z.string().trim().min(1).max(500),
-  // Optional cap on the depth the parser infers from the prompt. Omitted = the inferred depth, unchanged.
-  // It only ever LOWERS cost when the caller asks it to; the hard ceiling on a run stays MAX_NODES_PER_RUN,
-  // which no request can raise (docs/conflicts.md C60, C62).
+  // Optional tree height. Omitted = a depth stated in the prompt ("3 levels deep"), else DEFAULT_MAX_DEPTH
+  // (C100). Bounded by MAX_DEPTH_CEILING here, and the hard ceiling on a run stays MAX_NODES_PER_RUN, which
+  // no request can raise (docs/conflicts.md C60, C62).
   maxDepth: z.number().int().min(1).max(MAX_DEPTH_CEILING).optional(),
 });
 export type TreeRequestBody = z.infer<typeof TreeRequestBody>;
@@ -86,6 +86,18 @@ export const NodeResponse = z.object({
   quiz: Quiz.nullable(),
 });
 export type NodeResponse = z.infer<typeof NodeResponse>;
+
+// POST /api/nodes/:nodeId/boost (C128). Never an LLM call: it moves this node's waiting work to the front.
+//   promoted              - its article message was waiting and is now first in line
+//   awaiting-construction - not expanded yet: recorded, its construct message promoted, and its article will
+//                           be sent boosted
+//   writing               - already being written (or between attempts), nothing to move
+//   written / failed      - nothing left to do; a failed scroll's retry is a separate action
+export const BoostStatus = z.enum(["promoted", "awaiting-construction", "writing", "written", "failed"]);
+export type BoostStatus = z.infer<typeof BoostStatus>;
+
+export const BoostResponse = z.object({ nodeId: z.uuid(), status: BoostStatus });
+export type BoostResponse = z.infer<typeof BoostResponse>;
 
 export const TreeResponse = z.object({
   run: z.object({

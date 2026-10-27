@@ -1,5 +1,5 @@
 import { PROMPT_VERSION } from "../../config/constants";
-import type { ExpandOutput, LayerPosition, NodeContext } from "../../domain/schemas/node.schema";
+import type { Expansion, LayerPosition, NodeContext } from "../../domain/schemas/node.schema";
 import { normalizeTopic } from "../../domain/traversal/node-id";
 import { sha256Hex } from "../../shared/ids";
 import type { ExpansionCachePort } from "../ports/expansion-cache.port";
@@ -49,7 +49,7 @@ export function createExpansionCacheDep(deps: {
         topic,
         ancestorTopics: context.ancestors.map((a) => a.topic),
       }),
-    get: (key: string): Promise<ExpandOutput | undefined> => deps.cache.get(key),
-    put: (key: string, output: ExpandOutput): Promise<void> => deps.cache.put(key, output),
+    get: (key: string): Promise<Expansion | undefined> => deps.cache.get(key),
+    put: (key: string, output: Expansion): Promise<void> => deps.cache.put(key, output),
   };
 }

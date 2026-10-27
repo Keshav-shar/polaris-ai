@@ -35,7 +35,6 @@ async function main(): Promise<void> {
       verified: assessment.verified,
       credibleCount: assessment.credibleCount,
       distinctDomains: assessment.distinctDomains,
-      groundedness: guardrail.checkGroundedness().status,
     })}`,
   );
   // A node that fails the gate is NOT an error: it still gets an article, marked unverified. Exit 0

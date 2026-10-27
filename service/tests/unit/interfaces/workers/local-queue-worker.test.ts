@@ -10,7 +10,7 @@ import { fakeClock, fakeScheduler } from "../../../fixtures/fake-clock";
 import { fakeLogger } from "../../../fixtures/fake-generate";
 
 const runId = "11111111-1111-4111-8111-111111111111";
-const message = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1 });
+const message = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1, request: "photosynthesis" });
 
 function setup(handle: (m: NodeMessage) => Promise<void>, concurrency = 2) {
   const queue = createMemoryNodeQueue();

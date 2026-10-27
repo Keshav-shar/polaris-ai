@@ -5,23 +5,26 @@ import type { GenerateStructured } from "../llm/structured";
 import { buildWriterUserPrompt, WRITER_SYSTEM_PROMPT } from "./writer.prompt";
 
 export type WriterAgent = {
-  write(context: ArticleContext): Promise<WriterOutput>;
+  // `boosted`: a learner asked for this scroll, so its call jumps every other queued LLM call (C128, C129).
+  write(context: ArticleContext, options?: { boosted?: boolean }): Promise<WriterOutput>;
 };
 
 // Keeps only citations whose url really is one of the node's sources. A model that cites a url it was not
 // given has invented a source, and an invented citation is worse than none: it makes an unsupported claim
 // look grounded. Same rule for a question's evidenceUrl.
 function withKnownSourcesOnly(output: WriterOutput, allowed: ReadonlySet<string>): WriterOutput {
-  const citations = output.citations.filter((citation) => allowed.has(citation.url));
-  const questions = output.questions?.filter((question) => allowed.has(question.evidenceUrl));
+  // `questions` is taken OUT first: spreading the whole output and then "not re-adding" a bad set kept the
+  // unfiltered one - invented source included - which is the bug C117 fixed.
+  const { questions: proposed, ...rest } = output;
+  const citations = rest.citations.filter((citation) => allowed.has(citation.url));
+  const questions = proposed?.filter((question) => allowed.has(question.evidenceUrl));
   return {
-    ...output,
+    ...rest,
     citations,
     // Dropping a question leaves the set the wrong length, so the whole set goes rather than a short one:
-    // QuizOutput is `.length(QUESTIONS_PER_TOPIC)` and a partial quiz would fail at storage anyway.
-    ...(questions === undefined || questions.length !== QUIZ_CONFIG.QUESTIONS_PER_TOPIC
-      ? {}
-      : { questions }),
+    // QuizOutput is `.length(QUESTIONS_PER_TOPIC)` and a partial quiz would fail at storage anyway. An empty
+    // list - what strict structured output returns when there is nothing to cite (C114) - is no quiz too.
+    ...(questions === undefined || questions.length !== QUIZ_CONFIG.QUESTIONS_PER_TOPIC ? {} : { questions }),
   };
 }
 
@@ -33,7 +36,7 @@ function withKnownSourcesOnly(output: WriterOutput, allowed: ReadonlySet<string>
 // so a genuinely oversized draft is shortened by generateStructured's repair loop (C85).
 export function createWriterAgent({ generate }: { generate: GenerateStructured }): WriterAgent {
   return {
-    async write(context: ArticleContext) {
+    async write(context: ArticleContext, options = {}) {
       // Parsed, not trusted: the strictObject is what guarantees no children's material is in scope, and
       // asserting it here means a caller that built the context by hand cannot bypass that.
       const parsed = ArticleContext.parse(context);
@@ -46,6 +49,8 @@ export function createWriterAgent({ generate }: { generate: GenerateStructured }
         user: buildWriterUserPrompt(parsed, budget),
         label: "writer",
         seed: undefined,
+        // Shallower scrolls first: a learner reads top-down, and a parent signposts its children (C129).
+        priority: { lane: options.boosted === true ? "boosted-article" : "article", depth: parsed.node.depth },
       });
       const allowed = new Set(parsed.evidence.map((item) => item.url));
       return withKnownSourcesOnly(output, allowed);

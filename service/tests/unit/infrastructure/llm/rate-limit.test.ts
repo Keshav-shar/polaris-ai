@@ -1,7 +1,13 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError } from "openai";
 import { describe, expect, it } from "vitest";
 import { LLM } from "../../../../src/config/constants";
-import { bodyRetryAfterMs, classifyLlmError } from "../../../../src/infrastructure/llm/rate-limit";
+import {
+  bodyRetryAfterMs,
+  classifyLlmError,
+  parseDurationMs,
+  parseRateHeaders,
+  rateHeadersOfError,
+} from "../../../../src/infrastructure/llm/rate-limit";
 
 // Bodies modelled on what the three free-tier providers actually return.
 const geminiDaily = {
@@ -49,6 +55,46 @@ const geminiPerMinuteLive = {
 function sdkError(status: number, body: object, headers: Record<string, string> = {}): APIError {
   return APIError.generate(status, body, `${status} ${JSON.stringify(body)}`, new Headers(headers));
 }
+
+// C119: Groq's two daily ceilings, recorded live 2026-10-07 (organization id removed). Tokens/day is the
+// one that actually ends a writer pool's day; the error must say which, so a halt is not misread.
+describe("which daily limit", () => {
+  const groq = (limit: string) => ({
+    error: {
+      message:
+        "Rate limit reached for model `openai/gpt-oss-20b` in organization `org` service tier `on_demand` on " +
+        `${limit}: Limit 200000, Used 197311, Requested 7477. Please try again in 7m12s.`,
+      type: "tokens",
+      code: "rate_limit_exceeded",
+    },
+  });
+
+  it("reads a tokens/day 429 as a daily quota on TOKENS", () => {
+    expect(classifyLlmError(sdkError(429, groq("tokens per day (TPD)")))).toMatchObject({
+      kind: "daily-quota",
+      dailyLimit: "tokens",
+    });
+  });
+
+  it("reads a requests/day 429 as a daily quota on REQUESTS", () => {
+    expect(classifyLlmError(sdkError(429, groq("requests per day (RPD)")))).toMatchObject({
+      kind: "daily-quota",
+      dailyLimit: "requests",
+    });
+  });
+
+  it("never calls a tokens-per-MINUTE 429 daily", () => {
+    const perMinute = {
+      error: {
+        message:
+          "Rate limit reached for model `openai/gpt-oss-120b` in organization `org` service tier `on_demand` on " +
+          "tokens per minute (TPM): Limit 8000, Used 7521, Requested 4143. Please try again in 27.48s. " +
+          "Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing",
+      },
+    };
+    expect(classifyLlmError(sdkError(429, perMinute))).toMatchObject({ kind: "retryable" });
+  });
+});
 
 const liveGeminiDailyBody = [
   {
@@ -269,5 +315,64 @@ describe("classifyLlmError", () => {
     expect(
       classifyLlmError({ status: 400, error: { code: "context_length_exceeded" }, message: "too long" }).kind,
     ).toBe("fatal");
+  });
+});
+
+describe("per-minute limits the provider states (C130)", () => {
+  it("reads the requests/minute limit from a Groq RPM 429 body", () => {
+    const classified = classifyLlmError({
+      status: 429,
+      message:
+        "Rate limit reached for model `m` in organization `o` service tier `on_demand` on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s.",
+    });
+    expect(classified).toMatchObject({ kind: "retryable", requestsPerMinuteLimit: 30, retryAfterMs: 2_000 });
+  });
+
+  it("does not take a TOKENS/minute limit for a requests limit", () => {
+    const classified = classifyLlmError({
+      status: 429,
+      message: "... on tokens per minute (TPM): Limit 8000, Used 7157, Requested 948. Please try again in 2s.",
+    });
+    expect(classified.requestsPerMinuteLimit).toBeUndefined();
+  });
+
+  it("parses Groq durations", () => {
+    expect(parseDurationMs("7.66s")).toBe(7_660);
+    expect(parseDurationMs("2m59.56s")).toBe(179_560);
+    expect(parseDurationMs("120ms")).toBe(120);
+    expect(parseDurationMs("1h2m3s")).toBe(3_723_000);
+    expect(parseDurationMs("12")).toBe(12_000);
+    expect(parseDurationMs("soon")).toBeUndefined();
+    expect(parseDurationMs("5s later")).toBeUndefined();
+    expect(parseDurationMs("")).toBeUndefined();
+  });
+
+  it("reads the token pair from a Headers instance or a plain object, and the bucket size when sent", () => {
+    const headers = new Headers({
+      "x-ratelimit-remaining-tokens": "5120",
+      "x-ratelimit-reset-tokens": "21.6s",
+      "x-ratelimit-limit-tokens": "8000",
+      // Per DAY on Groq: deliberately not part of the pacing snapshot.
+      "x-ratelimit-remaining-requests": "998",
+    });
+    expect(parseRateHeaders(headers)).toEqual({ remainingTokens: 5_120, resetTokensMs: 21_600, limitTokens: 8_000 });
+    expect(parseRateHeaders({ "x-ratelimit-remaining-tokens": "10", "x-ratelimit-reset-tokens": "1s" })).toEqual({
+      remainingTokens: 10,
+      resetTokensMs: 1_000,
+    });
+  });
+
+  it("returns nothing for missing or unreadable headers rather than guessing", () => {
+    expect(parseRateHeaders(undefined)).toBeUndefined();
+    expect(parseRateHeaders({ "x-ratelimit-remaining-tokens": "10" })).toBeUndefined();
+    expect(parseRateHeaders({ "x-ratelimit-remaining-tokens": "-1", "x-ratelimit-reset-tokens": "1s" })).toBeUndefined();
+    expect(parseRateHeaders({ "x-ratelimit-remaining-tokens": "x", "x-ratelimit-reset-tokens": "1s" })).toBeUndefined();
+  });
+
+  it("reads the same snapshot from an error that carries headers", () => {
+    expect(
+      rateHeadersOfError({ status: 429, headers: { "x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "4s" } }),
+    ).toEqual({ remainingTokens: 0, resetTokensMs: 4_000 });
+    expect(rateHeadersOfError(new Error("no headers"))).toBeUndefined();
   });
 });

@@ -2,14 +2,14 @@ import "dotenv/config";
 import { createBuildStack } from "../src/composition/build-stack";
 import { getEnv, isLlmConfigured, requireLlmEnv } from "../src/config/env";
 import type { TreeNode } from "../src/domain/schemas/node.schema";
-import { estimateExpandCalls } from "../src/domain/traversal/estimate-expand-calls";
+import { estimateCalls } from "../src/domain/traversal/estimate-calls";
 import { createLogger } from "../src/shared/logger";
 import { failureDetail } from "./redact";
 
 // Real end-to-end BUILD on the local queue - both passes, because since C91 they run at the same time:
-// each expanded node hands itself straight to the article queue. Cost is roughly `branching ^ maxDepth`
-// expand calls plus one search and one writer call per node, so
-// the default is 1 (~6 nodes). Pass a larger depth only when the quota allows -
+// each expanded node hands itself straight to the article queue. Cost is one expand call per node that has
+// children (the final layer is written by its parent, C99) plus one search and one writer call per node, and
+// nothing at kickoff (C100), so the default is 1 (~6 nodes, ~7 calls). Pass a larger depth only when the quota allows -
 // the pipeline itself is depth-agnostic and is proven at depth by the unit tests. A run that outlives its
 // quota is NOT an error here: it prints the tree it managed to build, with `[blocked]` on the rest.
 function render(node: TreeNode, indent = ""): string {
@@ -18,16 +18,15 @@ function render(node: TreeNode, indent = ""): string {
   return [head + brief, ...node.children.map((child) => render(child, `${indent}  `))].join("\n");
 }
 
-// "expanded" counts the nodes an LLM call was actually spent on, which is what a partial run wants to
-// report. A node's status can be blocked while its brief is already written and paid for, so the brief -
-// not the status - is the evidence that the work happened.
-function countNodes(node: TreeNode): { known: number; expanded: number } {
+// "finished" counts nodes whose construction ended (done or failed). A brief no longer proves a node was
+// expanded - its parent writes it (C99) - so status is the evidence; the LLM spend is counted separately.
+function countNodes(node: TreeNode): { known: number; finished: number } {
   return node.children.reduce(
     (total, child) => {
       const sub = countNodes(child);
-      return { known: total.known + sub.known, expanded: total.expanded + sub.expanded };
+      return { known: total.known + sub.known, finished: total.finished + sub.finished };
     },
-    { known: 1, expanded: node.brief === "" ? 0 : 1 },
+    { known: 1, finished: node.status === "done" || node.status === "failed" ? 1 : 0 },
   );
 }
 
@@ -56,7 +55,7 @@ async function main(): Promise<void> {
     },
   });
 
-  // The parser infers a depth from the prompt; the smoke run overrides it so cost stays predictable.
+  // A prompt may state a depth; the smoke run overrides it so cost stays predictable.
   const { runId } = await stack.startTreeBuild.execute(prompt, { maxDepth });
   const started = Date.now();
   stack.worker.start();
@@ -74,7 +73,7 @@ async function main(): Promise<void> {
   await stack.articleWorker.stop();
 
   const { run, tree, stats } = await stack.getTree.execute(runId);
-  const estimate = estimateExpandCalls(maxDepth);
+  const estimate = estimateCalls(maxDepth, { maxNodes: env.MAX_NODES_PER_RUN });
   const configured = requireLlmEnv(env);
   const answered = stack.activeModel();
   // The configured lead is not always the one that answered - a rotation inside the model pool changes
@@ -90,11 +89,11 @@ async function main(): Promise<void> {
     console.log(`run ${runId} → ${run.status} (maxDepth ${maxDepth}, ${Date.now() - started} ms)`);
     console.log("(no tree: the root was never claimed)");
   } else {
-    const { known, expanded } = countNodes(tree);
+    const { known, finished } = countNodes(tree);
     const progress =
-      expanded === known
+      finished === known
         ? `${known} nodes, ${stats.articlesDone} scrolls`
-        : `INCOMPLETE: ${expanded} of ${known} known nodes expanded; est. ~${estimate} for a full tree`;
+        : `INCOMPLETE: ${finished} of ${known} known nodes finished; est. ~${estimate.nodes} nodes for a full tree`;
     console.log(`run ${runId} → ${run.status} (maxDepth ${maxDepth}, ${progress}, ${Date.now() - started} ms)`);
     if (run.haltReason !== undefined) console.log(`reason: ${run.haltReason}`);
     if (stats.nodesSkipped > 0) {
@@ -105,6 +104,18 @@ async function main(): Promise<void> {
     console.log(`\n${render(tree)}`);
   }
   console.log(`\nstats ${JSON.stringify(stats)}`);
+  const calls = stack.llmCalls();
+  const total = Object.values(calls).reduce((sum, n) => sum + n, 0);
+  console.log(`llm calls ${JSON.stringify(calls)} total=${total} (estimate ${JSON.stringify(estimate)})`);
+  // Provider requests (repairs and retries included) and what they cost, per label (C116).
+  for (const [label, used] of Object.entries(stack.llmUsage())) {
+    const perRequest = used.requests === 0 ? 0 : Math.round(used.completionTokens / used.requests);
+    console.log(
+      `llm usage ${label}: ${used.requests} requests, prompt ${used.promptTokens} + completion ` +
+        `${used.completionTokens} tokens (${used.reasoningTokens} reasoning; ~${perRequest}/request), ` +
+        `${Math.round(used.ms / 1000)} s in calls${used.truncated > 0 ? `, ${used.truncated} TRUNCATED` : ""}`,
+    );
+  }
 
   // A halt is a stall, not a crash: the partial tree above is the result. Exit non-zero so CI still
   // notices, but never in place of the output.

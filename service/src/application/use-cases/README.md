@@ -20,6 +20,7 @@
 - `get-node.use-case.ts` — built (Phase 10). Read model for `GET /api/nodes/:nodeId`: node, parent,
   children, article and quiz in one call. `article: null` = not yet written; `quiz: null` = no evidence
   to cite (C80)
+- `boost-article.use-case.ts` — built (Phase 10.10, C128). `POST /api/nodes/:nodeId/boost`: records the boost (`markBoosted`), promotes the node's waiting article message, else - node not expanded yet - its construct message; answers `promoted` / `awaiting-construction` / `writing` / `written` / `failed`. Never an LLM call, never a new message (a duplicate could reach the writer twice).
 - `list-runs.use-case.ts` — built (Phase 9). Recent runs newest-first for the UI's Codex. Returns the
   run record only: fetching every tree here would turn one page load into an unbounded read
 - `get-quiz.use-case.ts` — no longer planned as a separate step: the 3 questions are generated in the

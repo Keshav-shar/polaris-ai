@@ -6,7 +6,7 @@ import { createGetTree } from "../../src/application/use-cases/get-tree.use-case
 import { createHaltRun } from "../../src/application/use-cases/halt-run.use-case";
 import { createHandleDeadLetter } from "../../src/application/use-cases/handle-dead-letter.use-case";
 import { createStartTreeBuild } from "../../src/application/use-cases/start-tree-build.use-case";
-import { WORKER } from "../../src/config/constants";
+import { MAX_NODES_PER_RUN, WORKER } from "../../src/config/constants";
 import { createMemoryDedupStore } from "../../src/infrastructure/memory/memory-dedup.store";
 import { createMemoryNodeQueue } from "../../src/infrastructure/memory/memory-node-queue.adapter";
 import { createMemoryNodeStateStore } from "../../src/infrastructure/memory/memory-node-state.store";
@@ -46,7 +46,6 @@ export function buildHarness(options: HarnessOptions = {}) {
   const constructor = createNodeConstructor({
     expand: expander.expand,
     verify: verifyExpansion,
-    consolidate: async ({ children }) => [...children],
     logger,
   });
 
@@ -65,11 +64,13 @@ export function buildHarness(options: HarnessOptions = {}) {
     nodeState,
     dedup,
     treeRepo,
+    runRepo,
     queue,
     articleQueue,
     runState,
     fanIn,
     constructor,
+    maxNodesPerRun: maxNodesPerRun ?? MAX_NODES_PER_RUN,
     logger: log,
   });
   const handleDeadLetter = createHandleDeadLetter({
@@ -81,16 +82,19 @@ export function buildHarness(options: HarnessOptions = {}) {
   const haltRun = createHaltRun({ runRepo, logger: log });
 
   let nextId = 0;
-  const startTreeBuild = createStartTreeBuild({
+  const kickoff = createStartTreeBuild({
     // Deterministic ids: a counter in a v4-shaped string, so NodeMessage's uuid checks still pass.
     ids: { next: () => `00000000-0000-4000-8000-${String(nextId++).padStart(12, "0")}` },
-    parser: { parse: async (raw: string) => ({ topic: raw, maxDepth }) },
     runRepo,
     queue,
     logger: log,
     dailyRequestBudget,
     maxConcurrentRuns,
   });
+  // The harness's maxDepth unless a test passes its own, the way scripts/smoke-node.ts pins one.
+  const startTreeBuild: typeof kickoff = {
+    execute: (prompt, options) => kickoff.execute(prompt, { maxDepth, ...options }),
+  };
 
   const fatals: unknown[] = [];
   const worker = createLocalQueueWorker({

@@ -6,9 +6,11 @@ import { QuotaExhaustedError } from "../../../../src/domain/errors/quota-exhaust
 import { fakeClock } from "../../../fixtures/fake-clock";
 import {
   type ChatCompletionsClient,
+  clampEffort,
   createOpenAiCompatibleLlm,
   type OpenAiCompatibleConfig,
 } from "../../../../src/infrastructure/llm/openai-compatible.adapter";
+import type { LlmCallEvent } from "../../../../src/application/ports/llm.port";
 
 type Body = Parameters<ChatCompletionsClient["chat"]["completions"]["create"]>[0];
 
@@ -282,5 +284,208 @@ describe("createOpenAiCompatibleLlm", () => {
         expect(() => createOpenAiCompatibleLlm({ ...config, maxRetries: 1.5 }, client)).toThrow(RangeError);
       });
     });
+  });
+
+  // Phase 10.7: strict structured output, reasoning effort, the runaway cap and the per-call event.
+  describe("request shaping (C112-C116)", () => {
+    const schema = { name: "expand", schema: { type: "object", properties: {}, required: [], additionalProperties: false } };
+
+    function scripted(steps: (() => unknown)[]) {
+      const bodies: Body[] = [];
+      const client: ChatCompletionsClient = {
+        chat: {
+          completions: {
+            create: async (body) => {
+              bodies.push(JSON.parse(JSON.stringify(body)) as Body);
+              const step = steps.shift();
+              const result = step?.();
+              if (result instanceof Error) throw result;
+              return (result ?? { choices: [{ finish_reason: "stop", message: { content: "{}" } }] }) as never;
+            },
+          },
+        },
+      };
+      return { client, bodies };
+    }
+
+    const badRequest = (message: string, code?: string) =>
+      new APIError(400, { message, ...(code === undefined ? {} : { code }) }, message, new Headers());
+
+    function recorder() {
+      const warnings: string[] = [];
+      const debug: unknown[] = [];
+      return {
+        logger: { debug: (_m: string, c?: unknown) => void debug.push(c), warn: (m: string) => void warnings.push(m) },
+        warnings,
+        debug,
+      };
+    }
+
+    it("sends a strict json_schema when the call carries one, and plain JSON mode when it does not", async () => {
+      const { client, bodies } = scripted([]);
+      const llm = createOpenAiCompatibleLlm(config, client);
+      await llm.chat(messages, { json: true, responseSchema: schema });
+      await llm.chat(messages, { json: true });
+      expect(bodies[0]!.response_format).toEqual({
+        type: "json_schema",
+        json_schema: { name: "expand", strict: true, schema: schema.schema },
+      });
+      expect(bodies[1]!.response_format).toEqual({ type: "json_object" });
+    });
+
+    it("sends the label's effort and cap, clamped to the model's own ceiling", async () => {
+      const { client, bodies } = scripted([]);
+      await createOpenAiCompatibleLlm(config, client).chat(messages, { reasoningEffort: "medium", maxCompletionTokens: 4096 });
+      await createOpenAiCompatibleLlm({ ...config, maxReasoningEffort: "none" }, client).chat(messages, {
+        reasoningEffort: "low",
+      });
+      expect(bodies[0]).toMatchObject({ reasoning_effort: "medium", max_completion_tokens: 4096 });
+      expect(bodies[1]!.reasoning_effort).toBe("none");
+    });
+
+    it("clampEffort picks the lesser, and leaves an unset side alone", () => {
+      expect(clampEffort("high", "low")).toBe("low");
+      expect(clampEffort("low", "medium")).toBe("low");
+      expect(clampEffort("low", undefined)).toBe("low");
+      expect(clampEffort(undefined, "none")).toBeUndefined();
+    });
+
+    // Recorded from Groq on 2026-10-07: "400 `reasoning_effort` must be one of `low`, `medium`, or `high`".
+    it("drops a parameter the model rejects by name, retries at once, and never sends it to that model again", async () => {
+      const { client, bodies } = scripted([
+        () => badRequest("`reasoning_effort` must be one of `low`, `medium`, or `high`"),
+      ]);
+      const { logger, warnings } = recorder();
+      const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 0, logger }, client);
+      await expect(llm.chat(messages, { reasoningEffort: "none" })).resolves.toBe("{}");
+      await llm.chat(messages, { reasoningEffort: "low" });
+      expect(bodies.map((b) => b.reasoning_effort)).toEqual(["none", undefined, undefined]);
+      expect(warnings).toEqual(["llm feature unsupported by model, disabled for this process"]);
+    });
+
+    it("falls back from json_schema to json_object when the schema is refused", async () => {
+      const { client, bodies } = scripted([
+        () => badRequest("invalid JSON schema for response_format: 'expand': unsupported string format 'uri'"),
+      ]);
+      const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 0 }, client);
+      await llm.chat(messages, { json: true, responseSchema: schema });
+      expect(bodies.map((b) => b.response_format?.type)).toEqual(["json_schema", "json_object"]);
+    });
+
+    it("does not mistake the model's own bad JSON (json_validate_failed) for an unsupported feature", async () => {
+      const { client, bodies } = scripted([
+        () => badRequest("Failed to validate JSON for response_format", "json_validate_failed"),
+      ]);
+      const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 1 }, client, async () => {});
+      await llm.chat(messages, { json: true, responseSchema: schema });
+      // Retried as a re-roll (C70) with the schema still on.
+      expect(bodies.map((b) => b.response_format?.type)).toEqual(["json_schema", "json_schema"]);
+    });
+
+    it("rethrows a 400 about a parameter it never sent, instead of looping", async () => {
+      const { client, bodies } = scripted([() => badRequest("`reasoning_effort` must be one of ...")]);
+      const llm = createOpenAiCompatibleLlm({ ...config, maxRetries: 0 }, client);
+      await expect(llm.chat(messages)).rejects.toThrow(/reasoning_effort/);
+      expect(bodies).toHaveLength(1);
+    });
+
+    it("reports every completed request with its tokens, and warns when the cap cut a reply short", async () => {
+      const { client } = scripted([
+        () => ({
+          choices: [{ finish_reason: "length", message: { content: "{" } }],
+          usage: { prompt_tokens: 100, completion_tokens: 4096, completion_tokens_details: { reasoning_tokens: 3000 } },
+        }),
+      ]);
+      const events: LlmCallEvent[] = [];
+      const { logger, warnings, debug } = recorder();
+      const llm = createOpenAiCompatibleLlm({ ...config, logger, onCall: (e) => void events.push(e) }, client);
+      await llm.chat(messages, { json: true, label: "expand", reasoningEffort: "low", maxCompletionTokens: 4096 });
+      expect(events).toEqual([
+        expect.objectContaining({
+          label: "expand",
+          model: "test-model",
+          promptTokens: 100,
+          completionTokens: 4096,
+          reasoningTokens: 3000,
+          finishReason: "length",
+          responseFormat: "json_object",
+          reasoningEffort: "low",
+        }),
+      ]);
+      expect(debug).toHaveLength(1);
+      expect(warnings).toEqual(["llm reply truncated at max_completion_tokens"]);
+    });
+
+    it("never lets a throwing usage observer fail the call", async () => {
+      const { client } = scripted([]);
+      const llm = createOpenAiCompatibleLlm(
+        {
+          ...config,
+          onCall: () => {
+            throw new Error("observer broke");
+          },
+        },
+        client,
+      );
+      await expect(llm.chat(messages)).resolves.toBe("{}");
+    });
+  });
+});
+
+describe("rate-limit headers (C130)", () => {
+  it("reports the token headers of every response to the pacer, via withResponse", async () => {
+    const observed: unknown[] = [];
+    const client: ChatCompletionsClient = {
+      chat: {
+        completions: {
+          create: () => {
+            const data = { choices: [{ message: { content: "ok" } }] };
+            return Object.assign(Promise.resolve(data), {
+              withResponse: async () => ({
+                data,
+                response: {
+                  headers: new Headers({ "x-ratelimit-remaining-tokens": "700", "x-ratelimit-reset-tokens": "3s" }),
+                },
+              }),
+            });
+          },
+        },
+      },
+    };
+    const pacer = { observeHeaders: (h: unknown) => void observed.push(h), observeRequestsPerMinute: () => {} };
+    await expect(createOpenAiCompatibleLlm({ ...config, pacer }, client).chat(messages)).resolves.toBe("ok");
+    expect(observed).toEqual([{ remainingTokens: 700, resetTokensMs: 3_000 }]);
+  });
+
+  it("tells the pacer the requests/minute limit a 429 states, and the headers it carried", async () => {
+    const limits: number[] = [];
+    const snapshots: unknown[] = [];
+    let calls = 0;
+    const client: ChatCompletionsClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            calls += 1;
+            if (calls === 1) {
+              throw APIError.generate(
+                429,
+                undefined,
+                "on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 1s.",
+                new Headers({ "x-ratelimit-remaining-tokens": "8000", "x-ratelimit-reset-tokens": "0s" }),
+              );
+            }
+            return { choices: [{ message: { content: "ok" } }] };
+          },
+        },
+      },
+    };
+    const pacer = {
+      observeHeaders: (h: unknown) => void snapshots.push(h),
+      observeRequestsPerMinute: (n: number) => void limits.push(n),
+    };
+    const { sleep } = fakeClock();
+    await expect(createOpenAiCompatibleLlm({ ...config, pacer }, client, sleep).chat(messages)).resolves.toBe("ok");
+    expect(limits).toEqual([30]);
+    expect(snapshots).toEqual([{ remainingTokens: 8_000, resetTokensMs: 0 }]);
   });
 });

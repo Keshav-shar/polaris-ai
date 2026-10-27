@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createStructuredGenerator, extractJson } from "../../../../src/application/llm/structured";
 import type { ChatMessage, ChatOptions, LlmPort } from "../../../../src/application/ports/llm.port";
-import { LLM, TEMPERATURE_BY_LABEL } from "../../../../src/config/constants";
+import { LLM, LLM_CALL_PROFILE, TEMPERATURE_BY_LABEL } from "../../../../src/config/constants";
 import { DomainError } from "../../../../src/domain/errors/domain-error";
 import { StructuredOutputError } from "../../../../src/domain/errors/structured-output.error";
 
@@ -46,10 +46,33 @@ describe("createStructuredGenerator", () => {
     const { llm, calls } = scriptedLlm(['{"ok": true}']);
     await expect(createStructuredGenerator(llm)(request)).resolves.toEqual({ ok: true });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.options).toEqual({ json: true });
+    // An unprofiled label gets JSON mode, its own label, and the strict schema derived from the validation
+    // schema (C114) - and no effort or cap, because only labels in LLM_CALL_PROFILE are shaped.
+    expect(calls[0]!.options).toEqual({
+      json: true,
+      label: "test",
+      responseSchema: {
+        name: "test",
+        schema: {
+          type: "object",
+          properties: { ok: { type: "boolean", const: true } },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      },
+    });
     expect(calls[0]!.messages).toEqual([
       { role: "system", content: "sys" },
       { role: "user", content: "usr" },
+    ]);
+  });
+
+  it("passes the caller's priority to every attempt, repairs included (C129)", async () => {
+    const { llm, calls } = scriptedLlm(["not json", '{"ok": true}']);
+    await createStructuredGenerator(llm)({ ...request, priority: { lane: "expand", depth: 2 } });
+    expect(calls.map((c) => c.options?.priority)).toEqual([
+      { lane: "expand", depth: 2 },
+      { lane: "expand", depth: 2 },
     ]);
   });
 
@@ -75,21 +98,34 @@ describe("createStructuredGenerator", () => {
 
   it("uses the per-label temperature and passes temperature and seed on every attempt, repairs included", async () => {
     const { llm, calls } = scriptedLlm(['{"ok": false}', '{"ok": true}']);
-    await createStructuredGenerator(llm)({ ...request, label: "parser", seed: 7 });
-    expect(calls.map((c) => c.options)).toEqual([
-      { json: true, temperature: TEMPERATURE_BY_LABEL.parser, seed: 7 },
-      { json: true, temperature: TEMPERATURE_BY_LABEL.parser, seed: 7 },
+    await createStructuredGenerator(llm)({ ...request, label: "expand-root", seed: 7 });
+    expect(calls.map((c) => c.options)).toMatchObject([
+      { json: true, temperature: TEMPERATURE_BY_LABEL["expand-root"], seed: 7 },
+      { json: true, temperature: TEMPERATURE_BY_LABEL["expand-root"], seed: 7 },
     ]);
   });
 
   it("lets an explicit temperature win and leaves it unset for labels without a default", async () => {
     const explicit = scriptedLlm(['{"ok": true}']);
-    await createStructuredGenerator(explicit.llm)({ ...request, label: "parser", temperature: 0.5 });
+    await createStructuredGenerator(explicit.llm)({ ...request, label: "expand-root", temperature: 0.5 });
     expect(explicit.calls[0]!.options?.temperature).toBe(0.5);
 
     const unlabeled = scriptedLlm(['{"ok": true}']);
     await createStructuredGenerator(unlabeled.llm)({ ...request, label: "expand" });
     expect(unlabeled.calls[0]!.options?.temperature).toBeUndefined();
+  });
+
+  // C112, C113: reasoning effort comes from the label, on every attempt, repairs included. No completion cap
+  // is sent unless the profile sets one - measured, a cap inflates Groq's admission estimate.
+  it("shapes each labelled call from LLM_CALL_PROFILE", async () => {
+    for (const label of ["expand", "expand-root", "writer"] as const) {
+      const { llm, calls } = scriptedLlm(['{"ok": false}', '{"ok": true}']);
+      await createStructuredGenerator(llm)({ ...request, label });
+      for (const call of calls) {
+        expect(call.options).toMatchObject({ label, reasoningEffort: LLM_CALL_PROFILE[label]!.reasoningEffort });
+        expect(call.options?.maxCompletionTokens).toBe(LLM_CALL_PROFILE[label]!.maxCompletionTokens);
+      }
+    }
   });
 
   it("propagates transport errors without retrying", async () => {

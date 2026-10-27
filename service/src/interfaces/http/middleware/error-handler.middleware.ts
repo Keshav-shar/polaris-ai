@@ -79,7 +79,7 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
     }
     // The request never reached the provider, so nothing about it is the caller's fault and nothing is
     // wrong with this service either: it is unavailable for as long as the network is, and the caller
-    // should try again shortly. POST /api/trees reaches this through the parser call it makes in-request.
+    // should try again shortly. Since C100 no route makes an LLM call in-request, so this is a backstop.
     if (err instanceof TransportUnavailableError) {
       logger.error("LLM provider unreachable", { method: req.method, path: req.path, err });
       retryAfter(res, HTTP_RETRY_AFTER.TRANSPORT_SECONDS);

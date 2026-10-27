@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ANCESTOR_WINDOW, QUEUE } from "../../../../src/config/constants";
+import { branchCap, fullTreeSize } from "../../../../src/domain/traversal/branch-cap";
 import { QuotaExhaustedError } from "../../../../src/domain/errors/quota-exhausted.error";
 import type { TreeNode } from "../../../../src/domain/schemas/node.schema";
 import { buildHarness } from "../../../fixtures/build-harness";
@@ -45,7 +46,8 @@ describe("construction loop", () => {
 
   it("marks a node failed after QUEUE.MAX_RECEIVES failures, and its parent still completes", async () => {
     const h = buildHarness({
-      maxDepth: 1,
+      // Depth 2, so the root's children are interior nodes that are actually called (C99).
+      maxDepth: 2,
       breadth: 2,
       // One child fails every delivery; the other is fine.
       failTimes: { "photosynthesis 1": QUEUE.MAX_RECEIVES },
@@ -54,33 +56,40 @@ describe("construction loop", () => {
     const { tree, run, stats } = await h.getTree.execute(runId);
 
     expect(run.status).toBe("constructed");
-    expect(stats).toMatchObject({ nodesDone: 2, nodesFailed: 1 });
+    // done: the root, the healthy child and its 2 final-layer children.
+    expect(stats).toMatchObject({ nodesDone: 4, nodesFailed: 1 });
     // The failed branch stays in the tree, marked failed, and never hangs its parent.
     expect(tree?.children.map((c) => c.topic)).toEqual(["photosynthesis 1", "photosynthesis 2"]);
     expect(tree?.children.map((c) => c.status)).toEqual(["failed", "done"]);
     expect(h.expander.countFor("photosynthesis 1")).toBe(QUEUE.MAX_RECEIVES);
   });
 
-  it("stops at MAX_NODES_PER_RUN and still finishes the run cleanly", async () => {
-    // Q6's answer: depth alone cannot bound cost, and an HTTP caller has no maxDepth override to hide
-    // behind. maxDepth 3 at breadth 3 wants 40 nodes; the budget allows 10.
-    const h = buildHarness({ maxDepth: 3, breadth: 3, concurrency: 1, maxNodesPerRun: 10 });
+  it("stays inside MAX_NODES_PER_RUN by spreading it evenly, and still finishes the run cleanly", async () => {
+    // Q6's answer: depth alone cannot bound cost. maxDepth 2 at breadth 5 wants 31 nodes; the budget allows
+    // 20, so the balanced cap is 3 children per node (1 + 3 + 9 = 13) - every branch reaches the bottom
+    // instead of the first branches spending the budget and the last ones stopping a layer short (C101).
+    const h = buildHarness({ maxDepth: 2, breadth: 5, concurrency: 1, maxNodesPerRun: 20 });
     const runId = await h.build("photosynthesis");
     const { tree, run, stats } = await h.getTree.execute(runId);
 
-    expect(flatten(tree!).length).toBe(10);
-    expect(stats.nodesSkipped).toBeGreaterThan(0);
+    const cap = branchCap(20, 2);
+    expect(cap).toBe(3);
+    const nodes = flatten(tree!);
+    expect(nodes.length).toBe(fullTreeSize(cap, 2));
+    expect(nodes.filter((n) => n.depth < 2).every((n) => n.children.length === cap)).toBe(true);
+    // The children the cap refused are reported, so the UI can say the tree is narrower than it could be.
+    expect(stats.nodesSkipped).toBe((5 - cap) * (1 + cap));
     // The critical part: trimming happens BEFORE the child set is stored, so every parent's fan-in
     // still completes. Trim after saveResult and the run would hang at `constructing` forever.
     expect(run.status).toBe("constructed");
     expect(stats).toMatchObject({ nodesFailed: 0 });
-    expect(h.warnings.map((w) => w.msg)).toContain("node budget reached: children dropped");
+    expect(h.warnings.map((w) => w.msg)).toContain("children trimmed to the branch cap");
   });
 
   it("never spends more LLM calls than the node budget allows", async () => {
     const h = buildHarness({ maxDepth: 5, breadth: 5, concurrency: 2, maxNodesPerRun: 12 });
     await h.build("photosynthesis");
-    // Without the cap this tree is estimateExpandCalls(5) = 3,906 calls.
+    // Without the cap this tree is thousands of nodes.
     expect(h.expander.calls.length).toBeLessThanOrEqual(12);
   });
 
@@ -134,11 +143,25 @@ describe("construction loop", () => {
     expect(h.expander.maxObservedConcurrency).toBeGreaterThan(1);
   });
 
-  it("expands each node exactly once across a whole build", async () => {
-    const h = buildHarness({ maxDepth: 2, breadth: 3 });
+  // THE regression for C99: one call per node that has children, and none at all for the final layer -
+  // whose topic and brief its parent's call already wrote.
+  it("calls the expander once per interior node and never for the final layer", async () => {
+    const h = buildHarness({ maxDepth: 3, breadth: 3 });
     const runId = await h.build("photosynthesis");
     const nodes = flatten((await h.getTree.execute(runId)).tree!);
-    expect(h.expander.calls.length).toBe(nodes.length);
+    const interior = nodes.filter((n) => n.depth < 3);
+    const finalLayer = nodes.filter((n) => n.depth === 3);
+
+    expect(nodes).toHaveLength(1 + 3 + 9 + 27);
+    expect(h.expander.calls).toHaveLength(interior.length);
     expect(new Set(h.expander.calls).size).toBe(h.expander.calls.length);
+    for (const leaf of finalLayer) {
+      expect(h.expander.countFor(leaf.topic)).toBe(0);
+      expect(leaf.status).toBe("done");
+      expect(leaf.brief).toBe(`brief for ${leaf.topic}`);
+    }
+    // Every node, leaves included, still gets exactly one article message.
+    const articles = await h.articleQueue.receive(1_000);
+    expect(articles.map((a) => a.message.nodeId).sort()).toEqual(nodes.map((n) => n.id).sort());
   });
 });

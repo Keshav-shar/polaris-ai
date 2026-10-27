@@ -56,9 +56,9 @@ describe("get-tree use-case", () => {
   it("keeps failed nodes in the tree, marked failed, and still counts them", async () => {
     // They used to be pruned along with their whole subtree. A node the user paid an LLM call for is
     // worth showing even when it ended badly - hiding it leaves a hole with no explanation (C54).
-    const h = buildHarness({ maxDepth: 1, breadth: 2 });
-    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1 });
+    const h = buildHarness({ maxDepth: 2, breadth: 2 });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
+    const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
     await h.expandNode.execute(root);
     const [first, second] = await h.queue.receive(2);
     await h.handleDeadLetter.execute(first!.message);
@@ -67,13 +67,14 @@ describe("get-tree use-case", () => {
     const result = await h.getTree.execute(runId);
     expect(result.tree?.children).toHaveLength(2);
     expect(result.tree?.children.map((c) => c.status).sort()).toEqual(["done", "failed"]);
-    expect(result.stats).toMatchObject({ nodesDone: 2, nodesFailed: 1 });
+    // done: the surviving child, its 2 final-layer children (completed by it, C99) and the root.
+    expect(result.stats).toMatchObject({ nodesDone: 4, nodesFailed: 1 });
   });
 
   it("reports the unfinished nodes of a halted run as blocked, with the reason", async () => {
-    const h = buildHarness({ maxDepth: 1, breadth: 2 });
-    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1 });
+    const h = buildHarness({ maxDepth: 2, breadth: 2 });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
+    const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 2, request: "photosynthesis" });
     // The root expands, its children are queued - and then the quota runs out.
     await h.expandNode.execute(root);
     await h.runRepo.setStatus(runId, "halted", "LLM daily quota exhausted");
@@ -84,13 +85,14 @@ describe("get-tree use-case", () => {
     expect(result.tree?.status).toBe("blocked");
     expect(result.tree?.children.map((c) => c.topic)).toEqual(["photosynthesis 1", "photosynthesis 2"]);
     expect(result.tree?.children.every((c) => c.status === "blocked")).toBe(true);
-    expect(result.tree?.children.every((c) => c.brief === "")).toBe(true);
+    // Their briefs were written by the root's own call (C99), so even a blocked child says what it covers.
+    expect(result.tree?.children.map((c) => c.brief)).toEqual(["brief for photosynthesis 1", "brief for photosynthesis 2"]);
   });
 
   it("shows a node under its topic even when its very first expansion failed", async () => {
     const h = buildHarness({ maxDepth: 1, breadth: 2, failTimes: { photosynthesis: 1 } });
     await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 1, status: "constructing" });
-    const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1 });
+    const root = rootConstructMessage(runId, { topic: "photosynthesis", maxDepth: 1, request: "photosynthesis" });
     await expect(h.expandNode.execute(root)).rejects.toThrow();
 
     // The row is written before the LLM call, so a failed expansion still leaves something to render.

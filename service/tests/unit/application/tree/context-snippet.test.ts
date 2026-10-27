@@ -16,21 +16,26 @@ const ctx = (overrides: Partial<NodeContext>): NodeContext => ({
 });
 
 describe("buildContextSnippet", () => {
-  it("shows (root) and a full expansion at the root", () => {
+  it("states the depth and asks for the full set of subtopics, each with a brief", () => {
     const text = buildContextSnippet(ctx({}));
     expect(text).toContain("Depth 0 of 5 (5 levels remaining)");
-    expect(text).toContain("Ancestor path (last 2 levels): (root).");
     expect(text).toContain("full set of distinct subtopics");
+    expect(text).toContain("brief");
   });
 
-  it("joins the ancestor trail and asks for fewer subtopics at the taper layer", () => {
+  // C99: the taper node's children are never called, so their briefs must carry their whole scope.
+  it("tells the taper layer that its children are the final layer and their briefs must stand alone", () => {
     const text = buildContextSnippet(ctx({ depth: 4, position: "taper", ancestors }));
-    expect(text).toContain("Biology → Photosynthesis");
     expect(text).toContain("fewer, more specific subtopics");
+    expect(text).toContain("FINAL layer");
+    expect(text).toContain("will not be broken down further");
   });
 
-  it("asks for no children at the leaf layer", () => {
-    expect(buildContextSnippet(ctx({ depth: 5, position: "leaf", ancestors }))).toContain("empty children list");
+  // C103: the trail is model-written text; it belongs inside the <node> data block, not in the instructions.
+  it("never repeats the ancestor trail, which lives inside the data block", () => {
+    const text = buildContextSnippet(ctx({ depth: 4, position: "taper", ancestors }));
+    expect(text).not.toContain("Biology");
+    expect(text).not.toContain("Photosynthesis");
   });
 
   it("never states a number of children", () => {

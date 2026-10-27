@@ -56,6 +56,13 @@ export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDep
         const counted = await runState.countNode(finished.runId, status);
 
         if (finished.parentId === null) {
+          // Only a run still `constructing` moves on. Another path may already have ended it - the ARTICLE
+          // worker halts the run when the writer pool's day is gone while construction still has quota -
+          // and overwriting that `halted` with `constructed` leaves a run that can never reach `done`, which
+          // the UI then polls forever (found live 2026-10-07, C120). Phase 12 makes this one conditional
+          // UPDATE (`where status = 'constructing'`).
+          const current = await runRepo.get(finished.runId);
+          if (current?.status !== "constructing") return;
           // The root is terminal, so construction is. A failed root means no tree was built: reporting
           // it as `constructed` would tell the UI to poll for a tree that will never arrive. The
           // pseudocode in docs/aws-retrofit.md only covers the success case (docs/conflicts.md C52).

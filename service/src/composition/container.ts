@@ -1,3 +1,4 @@
+import type { BoostArticle } from "../application/use-cases/boost-article.use-case";
 import type { GetNode } from "../application/use-cases/get-node.use-case";
 import type { GetTree } from "../application/use-cases/get-tree.use-case";
 import type { ListRuns } from "../application/use-cases/list-runs.use-case";
@@ -20,6 +21,8 @@ export type ApiContainer = {
   // Read path, same rule: listing runs must not start a build.
   listRuns(): ListRuns;
   getNode(): GetNode;
+  // Reorders queued work only, so it never starts a worker: a halted run stays halted (C128).
+  boostArticle(): BoostArticle;
   shutdown(): Promise<void>;
 };
 
@@ -64,6 +67,10 @@ export function createContainer(env: Env, logger: Logger): ApiContainer {
 
     getNode() {
       return built().getNode;
+    },
+
+    boostArticle() {
+      return built().boostArticle;
     },
 
     async shutdown() {

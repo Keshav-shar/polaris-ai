@@ -117,7 +117,8 @@ describe("tree build over HTTP", () => {
   });
 
   it("caps a run at MAX_NODES_PER_RUN and says how much it skipped", async () => {
-    const { baseUrl } = await serve({ maxDepth: 3, breadth: 3, maxNodesPerRun: 7 });
+    // Balanced cap for 7 nodes at depth 2 is 2 (1 + 2 + 4), so the full 3-wide tree is cut evenly (C101).
+    const { baseUrl } = await serve({ maxDepth: 2, breadth: 3, maxNodesPerRun: 7 });
 
     const started = await start(baseUrl, { prompt: "photosynthesis" });
     const { runId } = StartTreeResponse.parse(await started.json());

@@ -21,6 +21,16 @@ describe("memory run repository", () => {
     expect((await repo.get(a))?.status).toBe("constructing");
   });
 
+  // C100: kickoff stores a provisional topic; the root's own call names the canonical one.
+  it("replaces the provisional topic with the canonical one, and ignores an unknown run", async () => {
+    const repo = createMemoryRunRepository();
+    await repo.create({ ...run(a), topic: "teach me photosynthesis please" });
+    await repo.setTopic(a, "Photosynthesis");
+    await repo.setTopic(b, "Nothing");
+    expect((await repo.get(a))?.topic).toBe("Photosynthesis");
+    expect(await repo.get(b)).toBeUndefined();
+  });
+
   it("records a halt reason alongside the status", async () => {
     const repo = createMemoryRunRepository();
     await repo.create(run(a));

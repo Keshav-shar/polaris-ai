@@ -1,14 +1,13 @@
-import { createConsolidatorAgent } from "../application/agents/consolidator.agent";
 import { createGuardrailAgent } from "../application/agents/guardrail.agent";
 import { createExpandAgent } from "../application/agents/expand.agent";
-import { createParserAgent } from "../application/agents/parser.agent";
 import { createRetrievalAgent } from "../application/agents/retrieval.agent";
 import { verifyExpansion } from "../application/agents/verifier.agent";
 import { createWriterAgent } from "../application/agents/writer.agent";
-import { createStructuredGenerator } from "../application/llm/structured";
+import { createStructuredGenerator, type GenerateStructured } from "../application/llm/structured";
 import { createNodeConstructor } from "../application/tree/construct-node";
 import { createExpansionCacheDep } from "../application/tree/expansion-cache";
 import { createFanIn } from "../application/tree/fan-in";
+import { type BoostArticle, createBoostArticle } from "../application/use-cases/boost-article.use-case";
 import { createExpandNode, type ExpandNode } from "../application/use-cases/expand-node.use-case";
 import { createGetNode, type GetNode } from "../application/use-cases/get-node.use-case";
 import { createGetTree, type GetTree } from "../application/use-cases/get-tree.use-case";
@@ -28,6 +27,7 @@ import { failureReason } from "../shared/failure-reason";
 import type { NodeMessage } from "../domain/schemas/queue-message.schema";
 import { createMemoryArticleRepository } from "../infrastructure/memory/memory-article.repository";
 import { createMemoryDedupStore } from "../infrastructure/memory/memory-dedup.store";
+import { createMemoryEvidenceRepository } from "../infrastructure/memory/memory-evidence.repository";
 import { createMemoryExpansionCache } from "../infrastructure/memory/memory-expansion-cache.store";
 import { createMemoryNodeQueue } from "../infrastructure/memory/memory-node-queue.adapter";
 import { createMemoryNodeStateStore } from "../infrastructure/memory/memory-node-state.store";
@@ -41,16 +41,33 @@ import {
 } from "../interfaces/workers/local-queue-worker";
 import { randomUuid } from "../shared/ids";
 import type { Logger } from "../shared/logger";
-import { createLlmFromEnv, llmKeys } from "./llm";
+import { createLlmFromEnv } from "./llm";
+import { secretValues } from "./secrets";
 import { createSearchFromEnv } from "./search";
+
+export type LlmUsageTotals = {
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  ms: number;
+  truncated: number;
+};
 
 export type BuildStack = {
   // The model actually answering right now, which pool rotation changes mid-run. Reporting the
   // CONFIGURED lead after a rotation would name a model that may not have answered anything (C69).
   activeModel(): string;
+  // Structured LLM calls made so far, by label (expand-root, expand, writer). Logical calls: a repair or a
+  // retry inside one call is not counted again. What the smoke run reports as "requests per tree".
+  llmCalls(): Record<string, number>;
+  // Provider REQUESTS by label, repairs and retries included, with what they cost: tokens and time (C116).
+  // The pair is the point: llmCalls() minus nothing, llmUsage().requests minus llmCalls() = the overhead.
+  llmUsage(): Record<string, LlmUsageTotals>;
   startTreeBuild: StartTreeBuild;
   getTree: GetTree;
   getNode: GetNode;
+  boostArticle: BoostArticle;
   listRuns: ListRuns;
   expandNode: ExpandNode;
   writeArticle: WriteArticle;
@@ -71,17 +88,40 @@ export function createBuildStack(
   // such as Phase 7's container.ts.
   options: { onFatal?: (error: unknown, message: NodeMessage) => void | Promise<void> } = {},
 ): BuildStack {
-  const llmStack = createLlmFromEnv(env, logger);
-  const generate = createStructuredGenerator(llmStack.llm);
+  const usage = new Map<string, LlmUsageTotals>();
+  const llmStack = createLlmFromEnv(env, logger, (event) => {
+    const totals = usage.get(event.label) ?? {
+      requests: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      reasoningTokens: 0,
+      ms: 0,
+      truncated: 0,
+    };
+    totals.requests += 1;
+    totals.promptTokens += event.promptTokens ?? 0;
+    totals.completionTokens += event.completionTokens ?? 0;
+    totals.reasoningTokens += event.reasoningTokens ?? 0;
+    totals.ms += event.ms;
+    if (event.finishReason === "length") totals.truncated += 1;
+    usage.set(event.label, totals);
+  });
+  const calls = new Map<string, number>();
+  const counted =
+    (inner: GenerateStructured): GenerateStructured =>
+    (request) => {
+      calls.set(request.label, (calls.get(request.label) ?? 0) + 1);
+      return inner(request);
+    };
+  const generate = counted(createStructuredGenerator(llmStack.llm));
   // The writer gets its own generator, over its own pool when one is configured (C92). Same instance
   // otherwise, so nothing changes without LLM_*_WRITER_MODELS.
   const generateArticle =
-    llmStack.writerLlm === llmStack.llm ? generate : createStructuredGenerator(llmStack.writerLlm);
+    llmStack.writerLlm === llmStack.llm ? generate : counted(createStructuredGenerator(llmStack.writerLlm));
 
   const constructor = createNodeConstructor({
     expand: createExpandAgent({ generate }).expand,
     verify: verifyExpansion,
-    consolidate: createConsolidatorAgent({ generate }).consolidate,
     logger,
     // The cache is keyed by NAMESPACE, not by whichever model answered: a rotating pool changes the
     // answering model per call, and construct-node derives the key before the call but writes after it.
@@ -92,7 +132,9 @@ export function createBuildStack(
     }),
   });
 
-  const queue = createMemoryNodeQueue();
+  // Priority order on both queues (C128): a boosted node first, then shallower depth, then arrival. For
+  // construction, depth order is the breadth-first order it already followed.
+  const queue = createMemoryNodeQueue({ order: "priority" });
   const nodeState = createMemoryNodeStateStore();
   const runState = createMemoryRunStateStore(env.MAX_NODES_PER_RUN);
   const treeRepo = createMemoryTreeRepository();
@@ -100,13 +142,14 @@ export function createBuildStack(
   // A SECOND instance of the same in-memory queue, not a new adapter: NodeMessage already carries
   // `pass`, and both the queue and the worker are generic over it (docs/conflicts.md C35 - two passes,
   // two queues, still true now that they overlap in time). Phase 13 swaps each for its own SQS queue.
-  const articleQueue = createMemoryNodeQueue();
+  const articleQueue = createMemoryNodeQueue({ order: "priority" });
   const fanIn = createFanIn({ nodeState, treeRepo, runState, runRepo });
 
   const expandNode = createExpandNode({
     nodeState,
     dedup: createMemoryDedupStore(),
     treeRepo,
+    runRepo,
     queue,
     // An expanded node hands itself to the second pass at once (C91), so construction is where the
     // article queue is written to - the fan-in no longer sends anything.
@@ -114,6 +157,7 @@ export function createBuildStack(
     runState,
     fanIn,
     constructor,
+    maxNodesPerRun: env.MAX_NODES_PER_RUN,
     logger,
   });
   // One instance of each, shared by the writer and the reader: two would mean the API read from a store
@@ -125,20 +169,23 @@ export function createBuildStack(
     treeRepo,
     articleRepo,
     quizStore,
+    evidenceRepo: createMemoryEvidenceRepository(),
     retrieval: createRetrievalAgent({ search: createSearchFromEnv(env) }),
     guardrail: createGuardrailAgent(),
     writer: createWriterAgent({ generate: generateArticle }),
     fanIn,
     logger,
   });
-  const describeFailure = (error: unknown): string => failureReason(error, llmKeys(env));
+  // Every configured secret, not only the LLM key: a search or storage error may echo its own (C103).
+  const describeFailure = (error: unknown): string => failureReason(error, secretValues(env));
   const handleDeadLetter = createHandleDeadLetter({ fanIn, logger, describeFailure });
   const haltRun = createHaltRun({ runRepo, logger });
 
   return {
     activeModel: llmStack.activeModel,
+    llmCalls: () => Object.fromEntries(calls),
+    llmUsage: () => Object.fromEntries([...usage].map(([label, totals]) => [label, { ...totals }])),
     startTreeBuild: createStartTreeBuild({
-      parser: createParserAgent({ generate, logger }),
       // Randomness enters the system here and nowhere else.
       ids: { next: randomUuid },
       runRepo,
@@ -148,9 +195,11 @@ export function createBuildStack(
       dailyRequestBudget: llmStack.dailyRequestBudget,
       // Cost guard: MAX_NODES_PER_RUN bounds one run, this bounds how many run at once (C61).
       maxConcurrentRuns: env.MAX_CONCURRENT_RUNS,
+      maxNodesPerRun: env.MAX_NODES_PER_RUN,
     }),
     getTree: createGetTree({ runRepo, treeRepo, runState }),
     getNode: createGetNode({ treeRepo, articleRepo, quizStore }),
+    boostArticle: createBoostArticle({ treeRepo, runRepo, nodeState, queue, articleQueue }),
     listRuns: createListRuns({ runs: runRepo }),
     expandNode,
     writeArticle,
