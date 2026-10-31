@@ -3,6 +3,7 @@
 CLAUDE.md
 AGENTS.md
 docs/
+TASK_PROGRESS_CONTEXT.md
 # Dependencies
 node_modules/
 
@@ -13,6 +14,7 @@ node_modules/
 
 # Build output
 dist/
+infra/
 build/
 .next/
 out/
@@ -22,7 +24,9 @@ next-env.d.ts
 
 # Test and coverage
 coverage/
-
+e2e/
+fixtures/
+integration/
 # Logs
 *.log
 npm-debug.log*

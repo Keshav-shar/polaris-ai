@@ -6,13 +6,11 @@ import { RunPanel } from "../../../components/run-panel";
 export default async function TreePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="bg-gradient-to-r from-astral-gold via-amber-200 to-astral-starlight bg-clip-text font-serif text-2xl font-bold text-transparent">
-          Constellation Tree
-        </h1>
-        <Link href="/" className="font-serif text-sm text-astral-gold hover:underline">
-          ← Chart another
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rule pb-6">
+        <h1 className="font-serif text-4xl font-bold tracking-wide text-ink md:text-5xl">Your learning map</h1>
+        <Link href="/" className="text-xs font-semibold uppercase tracking-widest text-ink hover:text-gold-ink">
+          ← Learn something new
         </Link>
       </div>
       <RunPanel runId={id} />

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ApiClientError, getTree, isRunInProgress } from "../lib/api-client";
+import { friendlyError } from "../lib/friendly-error";
 import { flattenTree, indexTree } from "../lib/constellation-layout";
 import type { TreeResponse } from "../lib/contract";
 import { ConstellationView } from "./constellation-view";
@@ -21,15 +22,15 @@ function statusLine(tree: TreeResponse): string {
   const { run, stats } = tree;
   switch (run.status) {
     case "constructing":
-      return `Charting "${run.topic}" — ${stats.nodesDone} star(s) lit…`;
+      return `Building your map of "${run.topic}": ${stats.nodesDone} topic${stats.nodesDone === 1 ? "" : "s"} so far…`;
     case "constructed":
-      return `The constellation of "${run.topic}" is complete — ${stats.nodesDone} stars.`;
+      return `Your map of "${run.topic}" has ${stats.nodesDone} topics. Lessons are still being written…`;
     case "done":
-      return `"${run.topic}" is complete, scrolls included.`;
+      return `Your map of "${run.topic}" is ready, lessons included.`;
     case "halted":
-      return `Charting stopped early: ${run.haltReason ?? "the provider's daily quota ran out."}`;
+      return "Polaris paused this map because it reached its lesson-writing limit. Everything built so far is below.";
     case "failed":
-      return `Charting failed: ${run.haltReason ?? "see the service logs."}`;
+      return "Something went wrong while building this map. Everything built so far is below.";
   }
 }
 
@@ -58,7 +59,7 @@ export function RunPanel({ runId }: { runId: string }) {
         const fatal = error instanceof ApiClientError && (error.status === 404 || error.status === 503);
         failures += 1;
         if (fatal || failures >= MAX_CONSECUTIVE_FAILURES) {
-          const message = error instanceof Error ? error.message : "Could not reach the API.";
+          const message = friendlyError(error, "We couldn't load this map. Please try again.");
           setState((prev) => ({
             kind: "error",
             message,
@@ -87,8 +88,8 @@ export function RunPanel({ runId }: { runId: string }) {
 
   if (state.kind === "loading") {
     return (
-      <p role="status" className="py-16 text-center font-serif text-astral-gold">
-        Consulting the stars…
+      <p role="status" className="py-16 text-center font-serif text-lg text-gold-ink">
+        Loading your map…
       </p>
     );
   }
@@ -96,38 +97,39 @@ export function RunPanel({ runId }: { runId: string }) {
   return (
     <div className="space-y-4">
       {state.kind === "error" ? (
-        <p role="alert" className="rounded-xl border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
+        <p role="alert" className="rounded-xl border border-danger/30 bg-danger-soft p-3 text-sm text-danger">
           {state.message}
         </p>
       ) : null}
 
       {tree === undefined ? null : (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-astral-gold/20 pb-3">
-            <p role="status" aria-live="polite" data-run-status={tree.run.status} className="font-serif text-astral-starlight">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rule pb-3">
+            <p role="status" aria-live="polite" data-run-status={tree.run.status} className="font-serif text-lg font-semibold text-ink">
               {statusLine(tree)}
             </p>
-            <span className="rounded-full border border-astral-gold/30 bg-astral-gold/10 px-3 py-1 font-mono text-[11px] text-astral-gold">
-              {tree.stats.nodesDone} / {nodeCount} runes
+            <span className="rounded-full border border-line bg-gold-soft px-3 py-1 text-[11px] font-medium text-gold-ink">
+              {tree.stats.nodesDone} of {nodeCount} topics ready
             </span>
           </div>
 
           {tree.stats.nodesSkipped > 0 ? (
             // Complete as built, but narrower than maxDepth implies (docs/conflicts.md C60): presenting it
             // as the full tree would be a lie.
-            <p role="note" className="text-xs text-amber-400">
-              Constellation capped: {tree.stats.nodesSkipped} star(s) were left uncharted to stay inside the
-              run&apos;s node limit.
+            <p role="note" className="rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">
+              This map was trimmed to keep it a manageable size: {tree.stats.nodesSkipped} smaller topic
+              {tree.stats.nodesSkipped === 1 ? " was" : "s were"} left out.
             </p>
           ) : null}
           {tree.stats.nodesFailed > 0 ? (
-            <p role="note" className="text-xs text-amber-400">
-              {tree.stats.nodesFailed} star(s) failed to expand.
+            <p role="note" className="rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">
+              {tree.stats.nodesFailed} topic{tree.stats.nodesFailed === 1 ? "" : "s"} couldn&apos;t be broken down
+              further.
             </p>
           ) : null}
 
           {activeFocus === null ? (
-            <p className="py-12 text-center text-sm text-slate-400">No stars charted yet.</p>
+            <p className="py-12 text-center text-sm text-subtle">No topics yet. They&apos;ll appear here in a moment.</p>
           ) : (
             <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
               <div className="lg:col-span-3">

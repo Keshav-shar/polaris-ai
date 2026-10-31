@@ -2,14 +2,10 @@ import { CodexLibrary } from "../../components/codex-library";
 
 export default function CodexPage() {
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col items-start justify-between gap-2 border-b border-astral-gold/20 pb-4 md:flex-row md:items-center">
-        <div>
-          <h1 className="font-serif text-2xl font-bold text-astral-gold">Astral Codex</h1>
-          <p className="text-xs text-slate-400">
-            Every scroll charted so far, across every constellation.
-          </p>
-        </div>
+    <div className="space-y-8">
+      <div className="border-b border-rule pb-6">
+        <h1 className="font-serif text-4xl font-bold tracking-wide text-ink md:text-5xl">My library</h1>
+        <p className="mt-2 text-sm text-muted">Every map you&apos;ve built, with all of its lessons.</p>
       </div>
       <CodexLibrary />
     </div>

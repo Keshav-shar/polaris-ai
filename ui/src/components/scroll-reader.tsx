@@ -4,12 +4,13 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ApiClientError, getNode } from "../lib/api-client";
 import type { NodeResponse } from "../lib/contract";
+import { friendlyError } from "../lib/friendly-error";
 import { ArticleBody, readingMinutes } from "./article-body";
 import { EmptyState } from "./empty-state";
 import { QuizPanel } from "./quiz-panel";
 
-// Mirrors QUIZ_CONFIG.PASSING_SCORE_PERCENT. Scoring is client-side and nothing is stored, so the UI owns
-// the threshold it displays; the service never sees an attempt.
+// Mirrors QUIZ_CONFIG.PASSING_SCORE_PERCENT. Scoring is client-side today, so the UI owns the threshold it
+// displays.
 const PASS_MARK_PERCENT = 70;
 
 type State =
@@ -18,6 +19,9 @@ type State =
   | { kind: "missing" }
   | { kind: "error"; message: string };
 
+const LINK = "font-medium text-gold-ink hover:underline";
+
+// One lesson: the article, its sources, its quick check, and where it sits in the map.
 export function ScrollReader({ nodeId }: { nodeId: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
 
@@ -35,10 +39,7 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
           setState({ kind: "missing" });
           return;
         }
-        setState({
-          kind: "error",
-          message: error instanceof Error ? error.message : "Could not reach the API.",
-        });
+        setState({ kind: "error", message: friendlyError(error, "We couldn't load this lesson. Please try again.") });
       });
 
     return () => controller.abort();
@@ -46,15 +47,15 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
 
   if (state.kind === "loading") {
     return (
-      <p role="status" className="py-16 text-center font-serif text-astral-gold">
-        Unrolling the scroll…
+      <p role="status" className="py-16 text-center font-serif text-lg text-gold-ink">
+        Loading your lesson…
       </p>
     );
   }
 
   if (state.kind === "error") {
     return (
-      <EmptyState title="This scroll is out of reach">
+      <EmptyState title="This lesson didn't load">
         <p>{state.message}</p>
       </EmptyState>
     );
@@ -63,17 +64,14 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
   if (state.kind === "missing") {
     return (
       <EmptyState
-        title="No such star in any chart"
+        title="We couldn't find this lesson"
         action={
-          <Link href="/codex" className="font-serif text-sm text-astral-gold hover:underline">
-            Back to the codex
+          <Link href="/codex" className={LINK}>
+            Back to my library
           </Link>
         }
       >
-        <p>
-          Runs are held in memory until Phase 12, so a scroll from before the last service restart can no
-          longer be found.
-        </p>
+        <p>It may have been removed, or the link may be incomplete.</p>
       </EmptyState>
     );
   }
@@ -83,64 +81,58 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
   return (
     <article className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
       <div className="space-y-6 lg:col-span-8">
-        <header className="mystic-panel arch-border space-y-3 rounded-2xl p-6">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="font-mono text-[11px] text-slate-400">depth {node.depth}</span>
+        <header className="parchment-card space-y-3 rounded-2xl p-6 md:p-8">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-faint">
+            <span>Level {node.depth + 1}</span>
             {article === null ? null : (
-              <span className="font-mono text-[11px] text-slate-400">
-                {readingMinutes(article.contentMd)} min read
-              </span>
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{readingMinutes(article.contentMd)} min read</span>
+              </>
             )}
             {article === null ? null : article.credibilityVerified ? (
-              <span className="rounded-full border border-astral-gold/30 bg-astral-gold/10 px-2.5 py-0.5 font-mono text-astral-gold">
-                sourced
+              <span className="rounded-full border border-line bg-gold-soft px-2.5 py-0.5 normal-case tracking-normal text-gold-ink">
+                Backed by sources
               </span>
             ) : (
-              // Never hidden: an article written on thin evidence is still shown, but it says so
+              // Never hidden: a lesson written on thin evidence is still shown, but it says so
               // (docs/article-generation.md - it is marked unverified, not dropped).
-              <span className="rounded-full border border-amber-600/40 bg-amber-950/30 px-2.5 py-0.5 font-mono text-amber-400">
-                unverified
+              <span className="rounded-full border border-warn/30 bg-warn-soft px-2.5 py-0.5 normal-case tracking-normal text-warn">
+                Sources not confirmed
               </span>
             )}
           </div>
-          <h1 className="font-serif text-2xl font-bold text-astral-starlight">{node.topic}</h1>
-          {node.brief === "" ? null : <p className="text-sm leading-relaxed text-slate-400">{node.brief}</p>}
+          <h1 className="font-serif text-4xl font-bold text-ink">{node.topic}</h1>
+          {node.brief === "" ? null : <p className="text-sm leading-relaxed text-muted">{node.brief}</p>}
         </header>
 
         {article === null && articleFailureReason !== undefined ? (
-          // A permanent failure, not a pending one. Both used to render as "reload in a moment", which
-          // left the reader waiting for a scroll that was never coming back.
-          <EmptyState title="This scroll could not be written">
+          // A permanent failure, not a pending one: the learner must not wait for a lesson that is never
+          // coming. The diagnosis stays reachable, folded away, for whoever is debugging the run.
+          <EmptyState title="This lesson couldn't be written">
             <p>
-              Polaris charted this star, but its article failed and will not arrive on its own. The rest
-              of the constellation below it was written regardless.
+              Something went wrong while writing it, so it won&apos;t appear on its own. The other lessons in
+              this map are not affected.
             </p>
-            <p className="mt-2 font-mono text-[11px] leading-relaxed text-amber-400/80">
-              {articleFailureReason}
-            </p>
+            <details className="mt-3 text-left">
+              <summary className="cursor-pointer text-[11px] text-faint">Technical details</summary>
+              <p className="mt-1 font-code text-[11px] leading-relaxed text-subtle">{articleFailureReason}</p>
+            </details>
           </EmptyState>
         ) : article === null ? (
-          <EmptyState title="This scroll is not yet written">
-            <p>
-              Polaris has charted this star and written its brief. Its article is written in the second
-              pass, which runs top-down once the whole constellation exists — reload in a moment.
-            </p>
+          <EmptyState title="This lesson is still being written">
+            <p>Lessons are written from the top of the map down. Check back in a moment.</p>
           </EmptyState>
         ) : (
-          <section aria-label="Article" className="mystic-panel arch-border space-y-4 rounded-2xl p-6">
+          <section aria-label="Lesson" className="parchment-card space-y-4 rounded-2xl p-6 md:p-8">
             <ArticleBody contentMd={article.contentMd} />
             {article.citations.length === 0 ? null : (
-              <div className="border-t border-astral-gold/20 pt-3">
-                <h2 className="font-mono text-[10px] uppercase tracking-widest text-slate-500">Sources</h2>
+              <div className="border-t border-rule pt-3">
+                <h2 className="text-[10px] font-bold uppercase tracking-widest text-faint">Sources</h2>
                 <ol className="mt-2 space-y-1.5">
                   {article.citations.map((citation, i) => (
-                    <li key={`${i}-${citation.url}`} className="text-[11px] leading-relaxed text-slate-400">
-                      <a
-                        href={citation.url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="text-astral-gold hover:underline"
-                      >
+                    <li key={`${i}-${citation.url}`} className="text-[11px] leading-relaxed text-subtle">
+                      <a href={citation.url} target="_blank" rel="noreferrer noopener" className={LINK}>
                         [{i + 1}]
                       </a>{" "}
                       {citation.claim}
@@ -154,10 +146,11 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
 
         {quiz === null ? (
           article === null ? null : (
-            // A node with no credible source cannot have questions, because every question must cite one
-            // (docs/conflicts.md C80). Saying so beats an empty panel.
-            <p className="text-xs text-slate-500">
-              No trial for this scroll: its questions would have had no source to cite.
+            // A lesson with no credible source cannot have questions, because every question must cite
+            // one (docs/conflicts.md C80). Saying so beats an empty panel.
+            <p className="text-xs text-subtle">
+              There&apos;s no quick check for this lesson, because we couldn&apos;t find a source to base the
+              questions on.
             </p>
           )
         ) : (
@@ -166,36 +159,34 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
       </div>
 
       <aside className="space-y-4 lg:col-span-4">
-        <div className="mystic-panel arch-border space-y-3 rounded-2xl p-5">
-          <h2 className="border-b border-astral-gold/20 pb-2 font-serif text-sm font-bold text-astral-gold">
-            Position in the Constellation
-          </h2>
-          <dl className="space-y-2 text-xs">
+        <div className="parchment-card space-y-3 rounded-2xl p-5">
+          <h2 className="border-b border-rule pb-2 font-serif text-lg font-bold text-ink">Where this fits</h2>
+          <dl className="space-y-3 text-xs">
             <div>
-              <dt className="font-mono uppercase tracking-wider text-slate-500">Ascends to</dt>
+              <dt className="text-[10px] font-bold uppercase tracking-widest text-faint">Part of</dt>
               <dd className="mt-0.5">
                 {node.parent === null ? (
-                  <span className="text-slate-400">the root of this constellation</span>
+                  <span className="text-subtle">Nothing. This is the main topic.</span>
                 ) : (
-                  <Link href={`/topic/${node.parent.id}`} className="text-astral-gold hover:underline">
+                  <Link href={`/topic/${node.parent.id}`} className={LINK}>
                     {node.parent.topic}
                   </Link>
                 )}
               </dd>
             </div>
             <div>
-              <dt className="font-mono uppercase tracking-wider text-slate-500">
-                Descends to ({node.children.length})
+              <dt className="text-[10px] font-bold uppercase tracking-widest text-faint">
+                Up next ({node.children.length})
               </dt>
               <dd className="mt-1 space-y-1">
                 {node.children.length === 0 ? (
-                  <span className="text-slate-400">nothing — this is a leaf</span>
+                  <span className="text-subtle">Nothing further. This lesson covers it all.</span>
                 ) : (
                   node.children.map((child) => (
                     <Link
                       key={child.id}
                       href={`/topic/${child.id}`}
-                      className="block truncate text-slate-300 hover:text-astral-gold"
+                      className="block truncate text-muted hover:text-gold-ink"
                     >
                       {child.topic}
                     </Link>
@@ -204,11 +195,8 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
               </dd>
             </div>
           </dl>
-          <Link
-            href={`/tree/${node.runId}`}
-            className="block border-t border-astral-gold/20 pt-3 font-serif text-xs text-astral-gold hover:underline"
-          >
-            ← See it in the constellation
+          <Link href={`/tree/${node.runId}`} className={`block border-t border-rule pt-3 text-xs ${LINK}`}>
+            ← See the whole map
           </Link>
         </div>
       </aside>

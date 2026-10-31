@@ -1,17 +1,27 @@
 "use client";
 
-import { useState } from "react";
-import { ApiClientError, startTree } from "../lib/api-client";
+import { useEffect, useState } from "react";
+import { startTree } from "../lib/api-client";
+import { friendlyError } from "../lib/friendly-error";
 
 const PROMPT_MAX_LENGTH = 500; // TreeRequestBody: z.string().trim().min(1).max(500)
 const MAX_DEPTH_CEILING = 6; // service/src/config/constants.ts
+const TOAST_MS = 3_500;
 
 // "auto" means send no maxDepth at all: the service takes a depth stated in the prompt ("3 levels deep"),
 // else its default (C100). Nothing here can raise a run past MAX_DEPTH_CEILING or MAX_NODES_PER_RUN.
+const DEPTH_HINT: Record<number, string> = {
+  1: "quick overview",
+  2: "the main ideas",
+  3: "a solid course",
+  4: "detailed study",
+  5: "in-depth",
+  6: "deep dive",
+};
 const DEPTH_OPTIONS = Array.from({ length: MAX_DEPTH_CEILING }, (_, i) => i + 1);
 
 const FIELD =
-  "w-full rounded-xl border border-astral-gold/30 bg-astral-900 px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 transition-colors focus:border-astral-gold focus:outline-none disabled:opacity-55";
+  "w-full rounded-xl border border-line bg-white text-sm text-ink-soft placeholder-faint shadow-inner focus:outline-none focus:ring-1 focus:ring-gold disabled:opacity-60";
 
 export function TopicForm({
   onStarted,
@@ -24,6 +34,13 @@ export function TopicForm({
   const [depth, setDepth] = useState("auto");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [toast, setToast] = useState(false);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(false), TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const busy = submitting || disabled;
 
@@ -35,82 +52,101 @@ export function TopicForm({
     try {
       const { runId } = await startTree(prompt.trim(), depth === "auto" ? undefined : Number(depth));
       setPrompt("");
+      setToast(true);
       onStarted(runId);
     } catch (err) {
-      // 429 carries the API's own Retry-After: a refusal to spend LLM quota, not a failure, so the
-      // message says when to try again rather than reading as an error.
-      if (err instanceof ApiClientError && err.status === 429) {
-        const wait = err.retryAfterSeconds;
-        setError(`${err.message}${wait === undefined ? "" : ` Try again in ${Math.ceil(wait)}s.`}`);
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Could not start the build.");
-      }
+      // A 429 is a "not right now", not a failure: friendlyError says when to try again.
+      setError(friendlyError(err, "We couldn't start your map. Please try again."));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <form onSubmit={onSubmit} className="mystic-panel arch-border space-y-4 rounded-2xl p-6">
-      <div className="space-y-1.5">
-        <label htmlFor="prompt" className="block font-serif text-sm font-bold text-astral-gold">
-          What should Polaris teach you?
-        </label>
-        <textarea
-          id="prompt"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          maxLength={PROMPT_MAX_LENGTH}
-          rows={3}
-          required
-          disabled={busy}
-          placeholder="teach me photosynthesis, 2 levels deep"
-          className={`${FIELD} resize-y`}
-        />
-        <p className="text-right font-mono text-[11px] text-slate-500">
-          {prompt.length}/{PROMPT_MAX_LENGTH}
-        </p>
-      </div>
+    <>
+      <form onSubmit={onSubmit} className="parchment-card space-y-5 rounded-2xl p-6 shadow-sm md:p-8">
+        <div>
+          <label htmlFor="prompt" className="mb-2 block text-xs font-bold uppercase tracking-widest text-muted">
+            What would you like to learn?
+          </label>
+          <textarea
+            id="prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            maxLength={PROMPT_MAX_LENGTH}
+            rows={2}
+            required
+            disabled={busy}
+            placeholder="e.g. teach me photosynthesis, 2 levels deep"
+            className={`${FIELD} resize-none p-4`}
+          />
+          <p className="mt-1 text-right text-[11px] text-faint">
+            {prompt.length}/{PROMPT_MAX_LENGTH}
+          </p>
+        </div>
 
-      <div className="space-y-1.5">
-        <label htmlFor="depth" className="block font-serif text-sm font-bold text-astral-gold">
-          Depth cap
-        </label>
-        <select
-          id="depth"
-          value={depth}
-          onChange={(e) => setDepth(e.target.value)}
-          disabled={busy}
-          className={`${FIELD} max-w-xs`}
+        <div>
+          <label htmlFor="depth" className="mb-2 block text-xs font-bold uppercase tracking-widest text-muted">
+            How deep should it go?
+          </label>
+          <div className="relative">
+            <select
+              id="depth"
+              value={depth}
+              onChange={(e) => setDepth(e.target.value)}
+              disabled={busy}
+              className={`${FIELD} cursor-pointer appearance-none px-4 py-3 pr-10`}
+            >
+              <option value="auto">Auto (from what you typed)</option>
+              {DEPTH_OPTIONS.map((d) => (
+                <option key={d} value={String(d)}>
+                  {d} level{d === 1 ? "" : "s"}: {DEPTH_HINT[d] ?? ""}
+                </option>
+              ))}
+            </select>
+            <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-muted">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </div>
+          <p className="mt-2 text-[11px] text-faint">
+            Deeper maps have more lessons and take longer to build. Start small if you just want the basics.
+          </p>
+        </div>
+
+        <button
+          type="submit"
+          disabled={busy || prompt.trim() === ""}
+          className="group inline-flex w-full cursor-pointer items-center justify-center gap-3 rounded-xl bg-ink px-8 py-4 text-xs font-semibold uppercase tracking-widest text-parchment shadow-md transition-all duration-300 hover:bg-gold-ink disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
         >
-          <option value="auto">auto (from the prompt)</option>
-          {DEPTH_OPTIONS.map((d) => (
-            <option key={d} value={String(d)}>
-              {d}
-            </option>
-          ))}
-        </select>
-        <p className="text-xs text-slate-500">
-          Star count grows with depth and every star costs an LLM call. A cap only lowers what the prompt
-          asks for.
-        </p>
-      </div>
+          <span>{submitting ? "Building your map…" : "Build my learning map"}</span>
+          <svg
+            className="h-4 w-4 transition-transform group-hover:translate-x-1"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+          </svg>
+        </button>
 
-      <button
-        type="submit"
-        disabled={busy || prompt.trim() === ""}
-        className="rounded-xl border border-astral-gold/40 bg-gradient-to-r from-astral-gold/20 to-astral-amber/20 px-6 py-2.5 font-serif text-sm text-astral-gold shadow-gold-glow transition-all hover:from-astral-gold/30 hover:to-astral-amber/30 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
-      >
-        {submitting ? "Consulting the stars…" : "Chart the constellation"}
-      </button>
+        {error === undefined ? null : (
+          <p role="alert" className="rounded-xl border border-danger/30 bg-danger-soft p-3 text-sm text-danger">
+            {error}
+          </p>
+        )}
+      </form>
 
-      {error === undefined ? null : (
-        <p role="alert" className="rounded-xl border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
-          {error}
-        </p>
-      )}
-    </form>
+      {toast ? (
+        <div
+          role="status"
+          className="fixed right-6 bottom-6 z-50 animate-toast-in rounded-xl bg-ink px-6 py-3 text-xs font-semibold uppercase tracking-wider text-parchment shadow-lg"
+        >
+          Your map is on its way…
+        </div>
+      ) : null}
+    </>
   );
 }

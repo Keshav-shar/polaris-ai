@@ -1,129 +1,89 @@
 @import "tailwindcss";
 
-/* Tailwind v4 is CSS-first: the palette below is the `tailwind.config` object from ui/uireference.html
-   translated into `@theme`, which is what generates `bg-astral-900`, `text-astral-gold`,
-   `shadow-gold-glow` and the rest. There is no tailwind.config.js. */
+/* Tailwind v4 is CSS-first: the palette below is the parchment theme from docs/uimockcode.txt translated
+   into `@theme`, which is what generates `bg-parchment`, `text-ink`, `border-line` and the rest. There is
+   no tailwind.config.js. (C135 replaced the dark astral theme of C72.)
+
+   Text colours are chosen for >= 4.5:1 on the parchment background: `gold` (#8C6D36) is 4.46:1, just
+   under, so it is used for fills, borders and icons, and `gold-ink` (#765B2B, ~5.9:1) for gold TEXT. */
 @theme {
-  --color-astral-950: #070913;
-  --color-astral-900: #0b0f1e;
-  --color-astral-800: #13192e;
-  --color-astral-700: #1c2541;
-  --color-astral-600: #2a365c;
-  --color-astral-500: #3b4b7c;
-  --color-astral-gold: #d4af37;
-  --color-astral-goldglow: #ffd700;
-  --color-astral-amber: #f59e0b;
-  --color-astral-blue: #38bdf8;
-  --color-astral-violet: #a855f7;
-  --color-astral-starlight: #e0f2fe;
+  --color-parchment: #f9f6ee;
+  --color-parchment-dark: #efece4;
+  --color-parchment-deep: #e9e1d4;
+  --color-card: #fdfcf7;
+  --color-ink: #1c1814;
+  --color-ink-soft: #2c221e;
+  --color-muted: #5a5042;
+  --color-subtle: #6b5f50;
+  --color-faint: #766a58;
+  --color-gold: #8c6d36;
+  --color-gold-ink: #765b2b;
+  --color-gold-soft: #f2ece1;
+  --color-gold-glow: #d9c496;
+  --color-line: #d4c4a8;
+  --color-rule: #e2dac9;
+  --color-danger: #9b2c2c;
+  --color-danger-soft: #fbeaea;
+  --color-warn: #7a5200;
+  --color-warn-soft: #fbf1dc;
 
-  --font-serif: "Cinzel", Georgia, serif;
+  --font-serif: "Cormorant Garamond", Georgia, serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-code: "Fira Code", ui-monospace, monospace;
+  --font-code: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 
-  --shadow-gold-glow: 0 0 25px rgba(212, 175, 55, 0.25);
-  --shadow-torch-glow: 0 0 30px rgba(245, 158, 11, 0.3);
-  --shadow-starlight-glow: 0 0 20px rgba(56, 189, 248, 0.3);
+  --animate-toast-in: toast-in 0.3s ease-out both;
 }
 
-/* The astral theme is dark by construction, so there is no light variant to follow the OS. Declaring the
-   scheme keeps form controls and scrollbars dark instead of the browser's light defaults. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* One light theme; declaring the scheme keeps native form controls and scrollbars light. */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
-  background-color: var(--color-astral-950);
-  color: var(--color-astral-starlight);
+  background-color: var(--color-parchment);
+  color: var(--color-ink-soft);
   font-family: var(--font-sans);
   overflow-x: hidden;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: var(--color-astral-900);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--color-astral-600);
-  border-radius: 3px;
-  border: 1px solid rgba(212, 175, 55, 0.3);
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-astral-gold);
+::selection {
+  background: var(--color-gold);
+  color: #fff;
 }
 
-/* Focus must stay visible: the reference has no focus styling at all, and a gold-on-navy UI hides the
-   browser default almost completely. */
+/* Focus must stay visible on every control, whatever a component sets. */
 :focus-visible {
-  outline: 2px solid var(--color-astral-gold);
+  outline: 2px solid var(--color-gold);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
-/* Mythic arch / stained-glass border, from the reference. */
-.arch-border {
-  border: 1px solid rgba(212, 175, 55, 0.3);
-  position: relative;
-}
-.arch-border::before {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border: 1px solid rgba(56, 189, 248, 0.15);
-  pointer-events: none;
-  border-radius: inherit;
+/* The mock's card: off-white on parchment with a thin gold-grey border. */
+@layer components {
+  .parchment-card {
+    background: var(--color-card);
+    border: 1px solid var(--color-line);
+  }
 }
 
-.mystic-panel {
-  background: rgba(11, 15, 30, 0.85);
-  backdrop-filter: blur(8px);
-}
-
-@keyframes orbitRotate {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-.animate-orbit-slow {
-  animation: orbitRotate 120s linear infinite;
-}
-.animate-orbit-reverse {
-  animation: orbitRotate 90s linear infinite reverse;
-}
-
-@keyframes torchFlicker {
-  0%,
-  100% {
-    opacity: 0.9;
-    filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.6));
-  }
-  50% {
-    opacity: 0.75;
-    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4));
-  }
-  75% {
-    opacity: 1;
-    filter: drop-shadow(0 0 16px rgba(251, 191, 36, 0.8));
-  }
-}
-.torch-glow {
-  animation: torchFlicker 3s ease-in-out infinite;
-}
-
-/* Every decorative animation stops for a viewer who asked for less motion. The reference animates orbits,
-   torches and a starfield continuously, which is exactly what this setting exists for. */
+/* Every decorative animation stops for a viewer who asked for less motion. */
 @media (prefers-reduced-motion: reduce) {
-  .animate-orbit-slow,
-  .animate-orbit-reverse,
-  .torch-glow,
-  .animate-pulse,
-  .animate-ping {
-    animation: none !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

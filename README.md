@@ -11,7 +11,6 @@ polaris-ai/
 │   ├── src/    domain, application, infrastructure, interfaces, composition, config, shared
 │   └── tests/  unit, integration, e2e, fixtures
 ├── ui/         Next.js frontend (Vercel)
-├── infra/      AWS resources, created by hand from docs/setup.md (README-only; no IaC)
 └── docs/       design docs, build plan, conflicts log
 ```
 

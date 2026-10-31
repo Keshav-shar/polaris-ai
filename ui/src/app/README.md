@@ -7,15 +7,14 @@
 **Must not depend on:** Direct database access.
 
 **Planned contents:**
-- `layout.tsx`, `page.tsx` — Phase 2: title + API status line; Phase 8: `page.tsx` stays a SERVER
-  component composing `<ApiStatus>` with the client `<TreeBuilder>`. Phase 9: `layout.tsx` owns the
-  astral shell — fonts, `<StarField>`, `<SiteHeader>`, the single `<main>` and the footer — so a page
-  renders only its own content and never its own `<main>`
-- `globals.css` — Tailwind v4 entry (`@import "tailwindcss"`) plus the astral theme as `@theme`
-  tokens; there is NO `tailwind.config.js` in v4. Dark-only: the astral palette has no light variant,
-  so `color-scheme: dark` is declared and the Phase 8 `prefers-color-scheme` pair is gone (C72). Keeps
-  an always-visible focus ring, and a `prefers-reduced-motion` block that stops every orbit, torch and
-  starfield animation (Phase 9)
-- `codex/page.tsx` — the Astral Codex: every charted node as a scroll card, client-side search
-  (Phase 9, built; excerpts become real articles in Phase 10)
+- `layout.tsx`, `page.tsx` — `page.tsx` stays a SERVER component: the hero copy, `<ApiStatus>` and
+  `<HeroIllustration>` are server-rendered slots handed to the client `<TreeBuilder>`, followed by
+  `<FeatureCards>` (the mock's layout, C135). `layout.tsx` owns the shell — fonts, `<SiteHeader>`, the
+  single `<main>` and the footer — so a page renders only its own content and never its own `<main>`
+- `globals.css` — Tailwind v4 entry (`@import "tailwindcss"`) plus the parchment theme as `@theme`
+  tokens (`parchment`, `card`, `ink`, `muted`, `subtle`, `faint`, `gold`, `gold-ink`, `line`, `rule`,
+  `danger`, `warn`, ...); there is NO `tailwind.config.js` in v4. Light-only, `color-scheme: light`
+  (C135, replacing C72's dark astral theme). Gold TEXT uses `gold-ink` for >= 4.5:1 contrast. Keeps an
+  always-visible focus ring and a `prefers-reduced-motion` block that stops every animation/transition
+- `codex/page.tsx` — "My library": one card per map, expanding into its lessons, client-side search
 - See the sub-folders for later routes.

@@ -18,14 +18,14 @@ function inline(text: string): ReactNode[] {
   return text.split(BOLD_OR_CODE).map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
       return (
-        <strong key={i} className="font-semibold text-astral-starlight">
+        <strong key={i} className="font-semibold text-ink">
           {part.slice(2, -2)}
         </strong>
       );
     }
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
       return (
-        <code key={i} className="rounded bg-astral-900 px-1 py-0.5 font-code text-[0.85em] text-astral-blue">
+        <code key={i} className="rounded bg-parchment-dark px-1 py-0.5 font-code text-[0.85em] text-ink">
           {part.slice(1, -1)}
         </code>
       );
@@ -104,11 +104,11 @@ export function ArticleBody({ contentMd }: { contentMd: string }) {
       {blocks.map((block, i) => {
         if (block.kind === "heading") {
           return block.level === 2 ? (
-            <h2 key={i} className="mt-5 font-serif text-lg font-bold text-astral-gold first:mt-0">
+            <h2 key={i} className="mt-6 font-serif text-2xl font-bold text-ink first:mt-0">
               {inline(block.text)}
             </h2>
           ) : (
-            <h3 key={i} className="mt-4 font-serif text-base font-semibold text-amber-200 first:mt-0">
+            <h3 key={i} className="mt-4 font-serif text-xl font-semibold text-ink-soft first:mt-0">
               {inline(block.text)}
             </h3>
           );
@@ -117,15 +117,15 @@ export function ArticleBody({ contentMd }: { contentMd: string }) {
           return (
             <ul key={i} className="ml-1 space-y-1.5">
               {block.items.map((item, j) => (
-                <li key={j} className="flex gap-2 text-sm leading-relaxed text-slate-200">
-                  <span aria-hidden="true" className="mt-[0.35rem] h-1 w-1 shrink-0 rounded-full bg-astral-gold" />
+                <li key={j} className="flex gap-2 text-[0.95rem] leading-relaxed text-ink-soft">
+                  <span aria-hidden="true" className="mt-[0.35rem] h-1 w-1 shrink-0 rounded-full bg-gold" />
                   <span>
                     {inline(item.text)}
                     {item.nested.length === 0 ? null : (
                       <ul className="mt-1.5 ml-1 space-y-1">
                         {item.nested.map((child, k) => (
-                          <li key={k} className="flex gap-2 text-slate-400">
-                            <span aria-hidden="true" className="mt-[0.4rem] h-1 w-1 shrink-0 rounded-full bg-astral-600" />
+                          <li key={k} className="flex gap-2 text-muted">
+                            <span aria-hidden="true" className="mt-[0.4rem] h-1 w-1 shrink-0 rounded-full bg-line" />
                             <span>{inline(child)}</span>
                           </li>
                         ))}
@@ -138,7 +138,7 @@ export function ArticleBody({ contentMd }: { contentMd: string }) {
           );
         }
         return (
-          <p key={i} className="text-sm leading-relaxed text-slate-200">
+          <p key={i} className="text-[0.95rem] leading-relaxed text-ink-soft">
             {inline(block.text)}
           </p>
         );
