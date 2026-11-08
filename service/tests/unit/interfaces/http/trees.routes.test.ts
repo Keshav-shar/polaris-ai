@@ -40,6 +40,9 @@ async function serve(deps: Partial<TreesRoutesDeps> = {}): Promise<string> {
     createTreesRouter({
       startTreeBuild: deps.startTreeBuild ?? (() => ({ execute: async () => ({ runId }) })),
       getTree: deps.getTree ?? (() => ({ execute: async () => treeResponse })),
+      setRunVisibility:
+        deps.setRunVisibility ??
+        (() => ({ execute: async (id, visibility) => ({ runId: id, visibility }) })),
     }),
   );
   const app = createApp({

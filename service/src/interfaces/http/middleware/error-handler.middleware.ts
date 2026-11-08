@@ -2,12 +2,17 @@ import type { ErrorRequestHandler, RequestHandler, Response } from "express";
 import { ZodError } from "zod";
 import { HTTP_RETRY_AFTER } from "../../../config/constants";
 import { EnvError } from "../../../config/env";
+import { DependencyUnavailableError } from "../../../domain/errors/dependency-unavailable.error";
+import { StorageNotReadyError } from "../../../domain/errors/storage-not-ready.error";
 import { NodeNotFoundError } from "../../../domain/errors/node-not-found.error";
+import { QuizNotFoundError } from "../../../domain/errors/quiz-not-found.error";
 import { QuotaExhaustedError } from "../../../domain/errors/quota-exhausted.error";
 import { RunInProgressError } from "../../../domain/errors/run-in-progress.error";
 import { RunNotFoundError } from "../../../domain/errors/run-not-found.error";
 import { StructuredOutputError } from "../../../domain/errors/structured-output.error";
 import { TransportUnavailableError } from "../../../domain/errors/transport-unavailable.error";
+import { UnauthenticatedError } from "../../../domain/errors/unauthenticated.error";
+import { UserQuotaExhaustedError } from "../../../domain/errors/user-quota-exhausted.error";
 import type { ApiError } from "../../../domain/schemas/api.schema";
 import type { Logger } from "../../../shared/logger";
 
@@ -54,6 +59,12 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
       res.status(400).json(apiError("invalid_request", "Request failed validation", issues));
       return;
     }
+    // Sign-in is missing, expired or invalid (C105). The message is ours, never the verifier's.
+    if (err instanceof UnauthenticatedError) {
+      res.set("WWW-Authenticate", "Bearer");
+      res.status(401).json(apiError("unauthenticated", err.message));
+      return;
+    }
     if (err instanceof RunNotFoundError) {
       res.status(404).json(apiError("run_not_found", err.message));
       return;
@@ -62,10 +73,20 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
       res.status(404).json(apiError("node_not_found", err.message));
       return;
     }
+    if (err instanceof QuizNotFoundError) {
+      res.status(404).json(apiError("quiz_not_found", err.message));
+      return;
+    }
     // Both 429s are refusals to spend LLM quota, not failures - the caller retries and gets a real answer.
     if (err instanceof RunInProgressError) {
       retryAfter(res, HTTP_RETRY_AFTER.RUN_IN_PROGRESS_SECONDS);
       res.status(429).json(apiError("run_in_progress", err.message));
+      return;
+    }
+    // A per-user cost guard (C105): the caller's builds for today are spent; it resets at UTC midnight.
+    if (err instanceof UserQuotaExhaustedError) {
+      retryAfter(res, err.retryAfterMs / 1000);
+      res.status(429).json(apiError("user_quota_exhausted", err.message));
       return;
     }
     if (err instanceof QuotaExhaustedError) {
@@ -89,6 +110,31 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
       res.status(503).json(
         apiError("transport_unavailable", "Cannot reach the language model provider; retry shortly"),
       );
+      return;
+    }
+    // The database answered but has no Polaris schema: the migrations were never applied. The fix belongs to whoever
+    // runs the service, so the log names it; the client gets a stable code and no PostgREST text.
+    if (err instanceof StorageNotReadyError) {
+      logger.error("database schema missing - apply the migrations (npm --prefix service run db:push)", {
+        method: req.method,
+        path: req.path,
+        operation: err.operation,
+        detail: err.detail,
+      });
+      res.status(503).json(apiError("storage_not_ready", "The database is not set up yet"));
+      return;
+    }
+    // The database or the sign-in key set did not answer. `detail` is an SDK string, so it stays in the log.
+    if (err instanceof DependencyUnavailableError) {
+      logger.error("dependency unreachable", {
+        method: req.method,
+        path: req.path,
+        dependency: err.dependency,
+        operation: err.operation,
+        detail: err.detail,
+      });
+      retryAfter(res, HTTP_RETRY_AFTER.TRANSPORT_SECONDS);
+      res.status(503).json(apiError("service_unavailable", "A service Polaris depends on is unreachable; retry shortly"));
       return;
     }
     // The model answered, just not with usable JSON: an upstream failure, so 502 rather than 500.

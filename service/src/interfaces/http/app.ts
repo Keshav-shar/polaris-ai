@@ -8,6 +8,8 @@ export type AppOptions = {
   corsOrigin: string;
   version: string;
   llmConfigured: boolean;
+  // Whether building needs sign-in (Supabase configured, C105). Reported on /health so the UI can ask for it.
+  authRequired?: boolean;
   logger: Logger;
   // Mounted at /api. Built in composition/ and passed in, so createApp itself still constructs nothing.
   // Optional: /health must answer even on a process with no API wiring at all.
@@ -15,7 +17,7 @@ export type AppOptions = {
 };
 
 // Exported separately from listen() so tests can start it on an ephemeral port.
-export function createApp({ corsOrigin, version, llmConfigured, logger, api }: AppOptions): Express {
+export function createApp({ corsOrigin, version, llmConfigured, authRequired = false, logger, api }: AppOptions): Express {
   const app = express();
   app.disable("x-powered-by");
 
@@ -24,7 +26,7 @@ export function createApp({ corsOrigin, version, llmConfigured, logger, api }: A
   app.use(express.json({ limit: "10kb" }));
 
   app.get("/health", (_req, res) => {
-    const body: HealthResponse = { status: "ok", service: "polaris-service", version, llmConfigured };
+    const body: HealthResponse = { status: "ok", service: "polaris-service", version, llmConfigured, authRequired };
     res.json(body);
   });
 

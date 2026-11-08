@@ -12,7 +12,17 @@ const BY_CODE: Record<string, string> = {
   node_not_found: "We couldn't find that lesson.",
   invalid_request: "Something in that request didn't look right.",
   payload_too_large: "That was too long to send.",
+  unauthenticated: "Please sign in to continue.",
+  user_quota_exhausted: "You've built today's maximum number of learning maps.",
+  service_unavailable: "Polaris can't reach one of its services right now.",
+  // Reads hit this too (a lesson page, C143), so it must not say "save".
+  storage_not_ready: "Polaris isn't fully set up yet, so this isn't available right now.",
 };
+
+// True when the right next step is to sign in, so a page can offer the link next to the message.
+export function needsSignIn(error: unknown): boolean {
+  return error instanceof ApiClientError && error.code === "unauthenticated";
+}
 
 const NETWORK = "Polaris can't be reached right now. Check your connection and try again.";
 

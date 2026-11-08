@@ -37,6 +37,15 @@ export const RUNS_LIST_LIMIT = 20;
 // can otherwise walk straight past by posting twice. Override with MAX_CONCURRENT_RUNS (docs/conflicts.md C61).
 export const MAX_CONCURRENT_RUNS = 1;
 
+// Per-user cost guards (C105), each overridable in service/.env. Both are refused BEFORE any work, so a refusal
+// costs nothing. Arithmetic: a depth-2 map is ~20-40 LLM requests and the two-key pool allows ~8,000/day, so 10
+// maps a day lets ~20 learners build daily before the provider, not this cap, is the limit. Storage: a depth-3 map
+// is ~1.4 MB and Supabase free is 500 MB (~300 maps), so 30 stored maps each fits ~10 heavy learners.
+export const USER_LIMITS = {
+  MAX_RUNS_PER_USER_PER_DAY: 10,
+  MAX_STORED_RUNS_PER_USER: 30,
+} as const;
+
 // Seconds put in `Retry-After` when a request is refused with 429. The quota value is only a fallback: a
 // provider-stated wait (QuotaExhaustedError.retryAfterMs) is used whenever there is one.
 export const HTTP_RETRY_AFTER = {
@@ -112,6 +121,8 @@ export const LLM_CALL_PROFILE: Readonly<
   "expand-root": { reasoningEffort: "low" },
   expand: { reasoningEffort: "low" },
   writer: { reasoningEffort: "medium" },
+  // One small call per learner per finished map, on the expand pool (C139): a few hundred tokens of counts in.
+  insight: { reasoningEffort: "low" },
 };
 
 // Rotation across models of ONE provider (infrastructure/llm/model-pool.adapter.ts). Groq's limits are
@@ -140,17 +151,26 @@ export const MODEL_POOL = {
 // Who goes first when LLM work queues for a slot (C129, C130): a scroll a learner is waiting on, then
 // construction (every article below depends on it), then articles shallowest-first. Lower rank goes first;
 // depth breaks ties within a lane, then arrival order.
-export const LLM_PRIORITY_LANES = { "boosted-article": 0, expand: 1, article: 2 } as const;
+// The learner-insight job (C139) goes last: nobody is waiting on it, and it must never delay a scroll.
+export const LLM_PRIORITY_LANES = { "boosted-article": 0, expand: 1, article: 2, insight: 3 } as const;
 
 
 // Namespaces every cached expansion. Bump on ANY change to the expand / context-snippet prompts or the
 // expansion's shape, so stale entries are missed rather than served (docs/conflicts.md C47).
 // "2": children carry their own briefs and the root names the topic (C99, C100).
-export const PROMPT_VERSION = "2";
+// "3": the root prompt may carry the learner's profile (C139), whose fingerprint is part of the key too.
+// NOT bumped by C146: only the WRITER prompt changed, and this version keys the EXPANSION cache - a bump would
+// throw away every cached expansion (each one an LLM call to redo) for prompts that did not change.
+export const PROMPT_VERSION = "3";
 
 // --- Evidence (article pass) ---
 export const CREDIBILITY = { MIN_SCORE: 0.6, MIN_CREDIBLE_SOURCES: 2 } as const;
-export const RETRIEVAL = { MAX_RESULTS: 5 } as const;
+// MAX_RESULTS: sources one lesson's writer sees, across every provider. PER_PROVIDER: at most this many from any
+// one provider, so breadth is guaranteed rather than hoped for (C146). Cost: each source is up to
+// SEARCH.SNIPPET_MAX_CHARS (~250 prompt tokens), so 8 against the old 5 is up to ~+750 writer prompt tokens per
+// article - roughly -12% articles/day under the 200K tokens/day ceiling (C119). Lower MAX_RESULTS to trade breadth
+// back for articles; the arithmetic is the same.
+export const RETRIEVAL = { MAX_RESULTS: 8, PER_PROVIDER: 2 } as const;
 
 // Search providers for the article pass. Wikipedia needs no key and no quota beyond identifying itself,
 // which is why it is the default (docs/free-tier-constraints.md).
@@ -158,6 +178,20 @@ export const SEARCH = {
   WIKIPEDIA_API_URL: "https://en.wikipedia.org/w/api.php",
   WIKIPEDIA_PAGE_URL: "https://en.wikipedia.org/w/index.php",
   TAVILY_API_URL: "https://api.tavily.com/search",
+  // C146. Crossref: no key; the "polite pool" asks for a mailto. Members are Crossref's own publisher ids,
+  // checked live 2026-11-08: 56 Cambridge University Press, 286 Oxford University Press, 263 IEEE.
+  CROSSREF_API_URL: "https://api.crossref.org/works",
+  CROSSREF_MEMBERS: [56, 286, 263],
+  // OpenAlex (the stand-in for Google Scholar, which has no API): a free key, ~USD 1/day of searches.
+  OPENALEX_API_URL: "https://api.openalex.org/works",
+  // IEEE Xplore Metadata API: a free key granted on application; its daily call cap is shown at registration.
+  IEEE_API_URL: "https://ieeexploreapi.ieee.org/api/v1/search/articles",
+  // GDELT DOC 2.0 (Reuters / AP headlines): no key, but "one request every 5 seconds" (its own refusal text,
+  // seen live 2026-11-08), so calls are spaced process-wide and a lesson waits at most GDELT_MAX_WAIT_MS for a slot.
+  GDELT_API_URL: "https://api.gdeltproject.org/api/v2/doc/doc",
+  GDELT_DOMAINS: ["reuters.com", "apnews.com"],
+  GDELT_MIN_INTERVAL_MS: 5_000,
+  GDELT_MAX_WAIT_MS: 10_000,
   // A hung search must not hold a node's article for the whole Lambda timeout.
   TIMEOUT_MS: 15_000,
   // Search text is untrusted and goes straight into the writer prompt: cap it so one provider reply cannot
@@ -174,6 +208,8 @@ export const SEARCH = {
   CACHE_TTL_MS: 60 * 60 * 1000,
 } as const;
 
+// OFFLINE METRIC ONLY since C147: the write path no longer re-checks citations; scripts/writer-eval.ts still
+// measures groundedness with these thresholds.
 // Lexical groundedness of a citation against the source it cites (C124): at least MIN_OVERLAP of the claim's
 // content words must be in that source, and every number. A claim with fewer than MIN_CLAIM_WORDS content
 // words is too short to judge and is kept unjudged. Starting values; calibrated on real writer output in
@@ -188,7 +224,10 @@ export const GROUNDEDNESS = { MIN_OVERLAP: 0.5, MIN_CLAIM_WORDS: 3 } as const;
 // The `ArticleOutput` refine keeps using this so generateStructured's repair loop still shortens a draft
 // that genuinely runs away, rather than letting it reach storage and the per-minute token budget.
 // Counted on contentMd only; citations are excluded.
-export const ARTICLE = { MAX_WORDS: 1500 } as const;
+// CLAIM_LEASE_MS (A18, C142): how long a claimed article is reserved for the delivery that claimed it. Longer than
+// the write-article Lambda's timeout (90 s, docs/aws-retrofit.md) so a live attempt is never overtaken, shorter than
+// the queue's visibility timeout (6 x 90 s) so a crashed one is retried before SQS would redeliver it anyway.
+export const ARTICLE = { MAX_WORDS: 1500, CLAIM_LEASE_MS: 120_000 } as const;
 
 // --- Quizzes: sitewide shape, never per-topic ---
 export const QUIZ_CONFIG = {
@@ -197,4 +236,21 @@ export const QUIZ_CONFIG = {
   QUESTIONS_PER_TOPIC: 3,
   PASSING_SCORE_PERCENT: 70,
   MAX_GUARDRAIL_RETRIES: 2,
+} as const;
+
+// --- Learner feedback + insights (Phase C: C138, C139) ---
+// Tags per lesson. Four of seven is already a lot to say about one page; more is noise, not signal.
+export const FEEDBACK = { MAX_TAGS: 4 } as const;
+
+export const INSIGHT = {
+  // Below this many signals (feedback rows + quiz attempts) the job makes no call: two thumbs say nothing
+  // reliable about a learner, and the call would be spent on noise.
+  MIN_SIGNALS: 3,
+  // The newest signals summarised per refresh. Bounds the read and keeps the profile about RECENT learning.
+  MAX_SIGNALS: 200,
+  // The only model-written part of a profile; it rides every message of the next build and enters two prompts.
+  MAX_GUIDANCE_CHARS: 240,
+  // Refreshes per learner per UTC day. A learner finishes at most USER_LIMITS.MAX_RUNS_PER_USER_PER_DAY maps a
+  // day, so this is the real ceiling: 3 small calls (~1.5K tokens each) per learner per day.
+  MAX_PER_USER_PER_DAY: 3,
 } as const;

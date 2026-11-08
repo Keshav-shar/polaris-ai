@@ -1,4 +1,5 @@
 import { ANCESTOR_WINDOW, ROOT_DEPTH } from "../../config/constants";
+import type { LearnerProfile } from "../../domain/schemas/insight.schema";
 import type { AncestorRef, ChildDraft } from "../../domain/schemas/node.schema";
 import { NodeMessage } from "../../domain/schemas/queue-message.schema";
 import { nextAncestors } from "../../domain/traversal/ancestor-window";
@@ -12,6 +13,8 @@ export type RootRequest = {
   maxDepth: number;
   // The learner's raw text. Travels in this one message only; the root call is the only prompt it enters.
   request: string;
+  // The owner's stored learner profile, when there is one (C139). Copied to every message below.
+  learner?: LearnerProfile | undefined;
 };
 
 // One construct message for the root. Downstream, the root differs only in carrying `request`: its own
@@ -29,6 +32,7 @@ export function rootConstructMessage(runId: string, root: RootRequest): NodeMess
     path: pathLabel(nodeId),
     ancestors: [],
     request: root.request,
+    ...(root.learner === undefined ? {} : { learner: root.learner }),
   };
 }
 
@@ -68,6 +72,8 @@ export function childConstructMessage(parent: NodeMessage, parentBrief: string, 
       brief: parentBrief,
     }),
     brief: child.brief,
+    // The owner's profile rides the whole build (C139), so no message ever has to read it from storage.
+    ...(parent.learner === undefined ? {} : { learner: parent.learner }),
   };
 }
 

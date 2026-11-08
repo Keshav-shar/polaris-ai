@@ -2,6 +2,9 @@ import type { NextFunction, Request, Response } from "express";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { EnvError } from "../../../../src/config/env";
+import { DependencyUnavailableError } from "../../../../src/domain/errors/dependency-unavailable.error";
+import { StorageNotReadyError } from "../../../../src/domain/errors/storage-not-ready.error";
+import { UserQuotaExhaustedError } from "../../../../src/domain/errors/user-quota-exhausted.error";
 import { QuotaExhaustedError } from "../../../../src/domain/errors/quota-exhausted.error";
 import { TransportUnavailableError } from "../../../../src/domain/errors/transport-unavailable.error";
 import { RunInProgressError } from "../../../../src/domain/errors/run-in-progress.error";
@@ -47,6 +50,38 @@ const req = { method: "POST", path: "/api/trees" } as Request;
 const next = vi.fn() as unknown as NextFunction;
 
 describe("error handler", () => {
+  it("maps the per-user daily cap to 429 user_quota_exhausted with the wait until UTC midnight (C105)", () => {
+    const { logger } = fakeLogger();
+    const { res, response } = fakeResponse();
+    createErrorHandler(logger)(new UserQuotaExhaustedError(10, 90_500), req, response, next);
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["Retry-After"]).toBe("91");
+    expect(res.body).toMatchObject({ error: { code: "user_quota_exhausted" } });
+  });
+
+  it("maps an unreachable dependency to 503 and keeps the SDK detail out of the body", () => {
+    const { logger, error: logError } = fakeLogger();
+    const { res, response } = fakeResponse();
+    const err = new DependencyUnavailableError("database", "runs.get", "fetch failed at sb_secret_abc");
+    createErrorHandler(logger)(err, req, response, next);
+    expect(res.statusCode).toBe(503);
+    expect(res.headers["Retry-After"]).toBeDefined();
+    expect(res.body).toMatchObject({ error: { code: "service_unavailable" } });
+    expect(JSON.stringify(res.body)).not.toContain("sb_secret");
+    expect(logError).toHaveBeenCalled();
+  });
+
+  it("maps an unmigrated database to 503 storage_not_ready, logging the fix and hiding PostgREST text", () => {
+    const { logger, error: logError } = fakeLogger();
+    const { res, response } = fakeResponse();
+    const err = new StorageNotReadyError("runs.countActive", "PGRST205: Could not find the table");
+    createErrorHandler(logger)(err, req, response, next);
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toMatchObject({ error: { code: "storage_not_ready" } });
+    expect(JSON.stringify(res.body)).not.toContain("PGRST205");
+    expect(logError).toHaveBeenCalled();
+  });
+
   it("maps a ZodError to 400 with issues", () => {
     const { logger, error: logError } = fakeLogger();
     const { res, response } = fakeResponse();

@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { ANCESTOR_WINDOW, BRIEF_MAX_WORDS, TOPIC_MAX_CHARS } from "../../config/constants";
 import { countWords } from "../../shared/words";
+import { LearnerProfile } from "./insight.schema";
 
 export const LayerPosition = z.enum(["normal", "taper", "leaf"]);
 export type LayerPosition = z.infer<typeof LayerPosition>;
@@ -18,6 +19,8 @@ export const NodeContext = z.object({
   maxDepth: z.number().int().min(1),
   position: LayerPosition,
   ancestors: z.array(AncestorRef).max(ANCESTOR_WINDOW), // nearest levels only, never the full chain
+  // Root only (C139): pitches the tree for the learner. Part of the expansion cache key whenever present.
+  learner: LearnerProfile.optional(),
 });
 export type NodeContext = z.infer<typeof NodeContext>;
 

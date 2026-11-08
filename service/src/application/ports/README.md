@@ -27,3 +27,16 @@
 
 **Design notes:**
 - Queue and node state start in memory and move to SQS / DynamoDB in Phase 13; repositories move to Postgres in Phase 12. Only `composition/` changes; callers never do.
+- `auth-verifier.port.ts` — built (Phase 12, C105). `verify(token)` -> `Caller | undefined`; throws only when
+  verification could not be attempted (503, never 401)
+- `usage.port.ts` — built (Phase 12). `reserveRun(userId, limit)` -> whether today's (UTC) build fitted; atomic,
+  a refusal counts nothing
+- `run-repository.port.ts` gained `listByOwner`, `listPublic`, `setVisibility`, `setStats`, `pruneForOwner`,
+  `haltInterrupted` (Phase 12)
+
+**Phase C (C106, C138, C139):** `progress.port.ts` (read state + quiz results; atomic best-score write),
+`feedback.port.ts` (one tag row per user and lesson), `insight.port.ts` (`InsightPort` + the producer-only
+`InsightQueuePort`). `UsagePort.reserveInsight` caps refreshes per user per day.
+
+**Phase 13:** `article-draft.port.ts` (A23); `NodeStatePort.claimArticle(nodeId, lease?)` + `recordError` /
+`lastError` (A18, A22); `RunStatePort.halt` (A16); `StallRequeuePort` in `node-queue.port.ts` (A15).

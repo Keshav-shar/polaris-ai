@@ -1,14 +1,18 @@
+import { statsOf } from "../../domain/entities/run-stats";
 import type { RunState } from "../../domain/schemas/node-state.schema";
 import type { NodeStatePort, TerminalStatus } from "../ports/node-state.port";
 import type { RunRepositoryPort } from "../ports/run-repository.port";
 import type { RunStatePort } from "../ports/run-state.port";
 import type { TreeRepositoryPort } from "../ports/tree-repository.port";
+import type { RunFinished } from "./run-finished";
 
 export type FanInDeps = {
   nodeState: NodeStatePort;
   treeRepo: TreeRepositoryPort;
   runState: RunStatePort;
   runRepo: RunRepositoryPort;
+  // Told when a run reaches `done` (C139: queue a learner-insight refresh). Must not throw; see run-finished.ts.
+  onRunFinished?: RunFinished | undefined;
 };
 
 export type FanIn = {
@@ -26,7 +30,7 @@ export type FanIn = {
 // This module no longer hands the article pass its trigger: since C91 an expanded node enqueues its OWN
 // article (expand-node.use-case.ts), so the two passes overlap in time and the fan-in is pure accounting -
 // no LLM call and no re-work happens on this walk.
-export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDeps): FanIn {
+export function createFanIn({ nodeState, treeRepo, runState, runRepo, onRunFinished }: FanInDeps): FanIn {
   // The run is done when construction has finished AND every constructed node's article is accounted for.
   // BOTH halves matter now that the passes overlap: articles start landing while `nodesDone` is still
   // climbing, so the count alone would declare a run finished after its first leaf.
@@ -38,7 +42,12 @@ export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDep
     // Only nodes whose CONSTRUCTION succeeded get an article ("failed construction nodes get no
     // article", docs/aws-retrofit.md), and nodesDone counts exactly those - so that is the target.
     const written = counted.articlesDone + counted.articlesFailed;
-    if (written >= counted.nodesDone) await runRepo.setStatus(runId, "done");
+    if (written >= counted.nodesDone) {
+      await runRepo.setStatus(runId, "done");
+      // Terminal: the counters are copied now, because the in-flight ones expire (C107).
+      await runRepo.setStats(runId, statsOf(counted));
+      await onRunFinished?.(runId);
+    }
   };
 
   return {
@@ -67,6 +76,7 @@ export function createFanIn({ nodeState, treeRepo, runState, runRepo }: FanInDep
           // it as `constructed` would tell the UI to poll for a tree that will never arrive. The
           // pseudocode in docs/aws-retrofit.md only covers the success case (docs/conflicts.md C52).
           await runRepo.setStatus(finished.runId, status === "failed" ? "failed" : "constructed");
+          if (status === "failed") await runRepo.setStats(finished.runId, statsOf(counted));
           // The articles have been in flight all along, so they may already all be in: this is the only
           // other moment the run can become `done`, and without it a fast tree would sit at `constructed`
           // with every scroll written.

@@ -170,6 +170,37 @@ describe("createModelPoolLlm", () => {
     expect(b.calls).toEqual([]);
   });
 
+  it("retires only the rejected ACCOUNT when another account is still live", async () => {
+    // Two Groq organizations: key2 being revoked says nothing about key1, so its members carry the pool.
+    const a1 = { ...member("a", "a via key1"), account: "key1" };
+    const a2 = { ...member("a", "never", { status: 401, message: "invalid api key" }), account: "key2" };
+    const b2 = { ...member("b", "never", { status: 401, message: "invalid api key" }), account: "key2" };
+    const llm = pool([a2, a1, b2]);
+    await expect(ask(llm)).resolves.toBe("a via key1");
+    await expect(ask(llm)).resolves.toBe("a via key1");
+    // b2 was retired with a2 on the first 401, never called.
+    expect(a2.calls).toHaveLength(1);
+    expect(b2.calls).toEqual([]);
+  });
+
+  it("still rethrows a 401 when the rejected account is the only one left", async () => {
+    const a1 = { ...member("a", "never", { status: 401, message: "invalid api key" }), account: "key1" };
+    const b1 = { ...member("b", "from b"), account: "key1" };
+    await expect(ask(pool([a1, b1]))).rejects.toMatchObject({ status: 401 });
+    expect(b1.calls).toEqual([]);
+  });
+
+  it("namespaces by distinct models, so a second key does not cold-start the cache", () => {
+    const oneKey = pool([member("a", "x"), member("b", "x")]);
+    const twoKeys = pool([
+      { ...member("a", "x"), account: "key1" },
+      { ...member("a", "x"), account: "key2" },
+      { ...member("b", "x"), account: "key1" },
+      { ...member("b", "x"), account: "key2" },
+    ]);
+    expect(twoKeys.cacheNamespace()).toBe(oneKey.cacheNamespace());
+  });
+
   it("never spends more provider requests per call than a single adapter would", async () => {
     const down = { status: 503, message: "overloaded" };
     const [a, b, c, d] = [member("a", "x", down), member("b", "x", down), member("c", "x", down), member("d", "x", down)];

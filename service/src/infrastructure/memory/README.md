@@ -18,3 +18,15 @@
 - The queue mirrors every SQS condition except a visibility timeout on a normal receive: in-process there is no crashed consumer (C51). A `release` CAN hide a message for a delay, which is SQS's `ChangeMessageVisibility` and is how a stall is redelivered without hot-looping; the clock and the timer are injected, so tests stay deterministic (C94).
 - Tests can make the queue redeliver, duplicate or reorder messages to prove idempotency.
 - Postgres replaces the repositories in Phase 12, SQS/DynamoDB replace queue and state in Phase 13, through `composition/`.
+- `memory-usage.store.ts` — `UsagePort` in memory: one counter per (user, UTC day), clock injected (Phase 12)
+- `memory-run.repository.ts` also implements the Phase 12 additions: `listByOwner`, `listPublic`, `setVisibility`,
+  `setStats`, `pruneForOwner` (private + finished only), `haltInterrupted`
+
+**Phase C:** `memory-progress.store.ts`, `memory-feedback.store.ts`, `memory-insight.store.ts` (clock injected), and
+`memory-insight-queue.adapter.ts` - the insight queue for `QUEUE_MODE=memory`: serial, in the background, failures
+logged and dropped (the job is idempotent), the handler injected by composition. `memory-usage.store.ts` counts runs
+and insight refreshes separately.
+
+**Phase 13:** `memory-article-draft.store.ts` (drafts for the DynamoDB node-state store when the permanent stores are
+in memory); the node-state store implements the A18 lease (injected via the claim) and `recordError`/`lastError`;
+the run-state store implements `halt`.

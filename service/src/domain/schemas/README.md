@@ -23,3 +23,16 @@ All written in Phase 2 (schema first):
 - Every later phase consumes these; a contract change is a logged deviation.
 - **Relative imports only** here and in anything these files import (`config/constants`, `shared/words`): `ui/` type-checks these files, and in `ui` the `@/` alias points at `ui/src` (`docs/conflicts.md` C41).
 - The UI imports these types (type-only) through `ui/src/lib/contract.ts`; keep them free of server-only imports.
+- `caller.schema.ts` — `Caller { userId }` (Phase 12, C105)
+- `run.schema.ts` additions (Phase 12): `RunVisibility` (`private` | `unlisted` | `public`), `RunStats` (moved from
+  `TreeResponse.stats`), and optional `ownerId`, `visibility`, `request`, `stats` on `Run` - absent only for an
+  ownerless auth-off run (C137)
+- `api.schema.ts` additions: `HealthResponse.authRequired`, `StartTreeResponse.prunedRuns?`, `RunsQuery.scope`
+  (`mine` | `public`), `RunSummary.visibility?`, `TreeResponse.run.{visibility?, isOwner?}`, `VisibilityBody`,
+  `VisibilityResponse`
+
+**Phase C:** `progress.schema.ts` (`PublicQuiz`, `QuizAttemptBody`/`Response`, `ProgressBody`, `NodeProgress`,
+`RunProgress`), `feedback.schema.ts` (`FeedbackTag` closed vocabulary, strict `LessonFeedbackBody` - no free text,
+C138), `insight.schema.ts` (`LearnerProfile`, `LearnerInsight`, `InsightMessage`, C139; no transform, because it is
+also the strict response schema). `NodeMessage`, `NodeContext` and `ArticleContext` gained an optional `learner`.
+`progress.schema.ts` and `feedback.schema.ts` are type-imported by `ui/src/lib/contract.ts`.

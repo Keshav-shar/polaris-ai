@@ -7,7 +7,10 @@ import type { Env } from "../config/env";
 export function secretValues(env: Env): string[] {
   const candidates = [
     env.LLM_API_KEY,
+    env.LLM_API_KEY_NEXT,
     env.TAVILY_API_KEY,
+    env.OPENALEX_API_KEY,
+    env.IEEE_API_KEY,
     env.SUPABASE_SERVICE_ROLE_KEY,
     env.AWS_ACCESS_KEY_ID,
     env.AWS_SECRET_ACCESS_KEY,

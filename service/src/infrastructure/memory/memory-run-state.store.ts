@@ -54,6 +54,13 @@ export function createMemoryRunStateStore(maxNodesPerRun: number = MAX_NODES_PER
       return { ...state };
     },
 
+    async halt(runId, nowMs) {
+      const state = itemFor(runId);
+      // The first halt wins, as the DynamoDB `if_not_exists` does.
+      state.haltedAt ??= nowMs;
+      runs.set(runId, state);
+    },
+
     async get(runId) {
       const state = runs.get(runId);
       return state === undefined ? undefined : { ...state };

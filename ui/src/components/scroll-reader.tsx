@@ -2,16 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ApiClientError, getNode } from "../lib/api-client";
+import { ApiClientError, getNode, markLessonRead } from "../lib/api-client";
 import type { NodeResponse } from "../lib/contract";
 import { friendlyError } from "../lib/friendly-error";
+import { useSession } from "../lib/use-session";
 import { ArticleBody, readingMinutes } from "./article-body";
 import { EmptyState } from "./empty-state";
+import { LessonFeedbackPanel } from "./lesson-feedback";
 import { QuizPanel } from "./quiz-panel";
-
-// Mirrors QUIZ_CONFIG.PASSING_SCORE_PERCENT. Scoring is client-side today, so the UI owns the threshold it
-// displays.
-const PASS_MARK_PERCENT = 70;
 
 type State =
   | { kind: "loading" }
@@ -24,6 +22,16 @@ const LINK = "font-medium text-gold-ink hover:underline";
 // One lesson: the article, its sources, its quick check, and where it sits in the map.
 export function ScrollReader({ nodeId }: { nodeId: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
+  const session = useSession();
+  const signedIn = session.status === "signed-in";
+  const written = state.kind === "found" && state.data.article !== null;
+
+  // Once per lesson opened, signed in, and only when there is something to read (C106). Best effort: a failed
+  // save never gets in the way of reading.
+  useEffect(() => {
+    if (!signedIn || !written) return;
+    markLessonRead(nodeId).catch(() => undefined);
+  }, [nodeId, signedIn, written]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -76,7 +84,7 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
     );
   }
 
-  const { node, article, quiz, articleFailureReason } = state.data;
+  const { node, article, quiz, articleFailureReason, feedback } = state.data;
 
   return (
     <article className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
@@ -154,8 +162,10 @@ export function ScrollReader({ nodeId }: { nodeId: string }) {
             </p>
           )
         ) : (
-          <QuizPanel questions={quiz.questions} passMark={PASS_MARK_PERCENT} />
+          <QuizPanel nodeId={node.id} questions={quiz.questions} />
         )}
+
+        {article !== null && signedIn ? <LessonFeedbackPanel nodeId={node.id} initial={feedback} /> : null}
       </div>
 
       <aside className="space-y-4 lg:col-span-4">

@@ -102,6 +102,20 @@ async function main(): Promise<void> {
       console.log(`capped: MAX_NODES_PER_RUN reached; ${stats.nodesSkipped} further topics not expanded`);
     }
     console.log(`\n${render(tree)}`);
+    // Which sites each written article cites (C146): the multi-source search is only worth its calls if the
+    // writer actually uses more than one provider.
+    console.log("\ncitations by host");
+    const walk = (node: TreeNode): TreeNode[] => [node, ...node.children.flatMap(walk)];
+    for (const node of walk(tree)) {
+      const { article } = await stack.getNode.execute(node.id);
+      if (article === null) continue;
+      const hosts = new Map<string, number>();
+      for (const citation of article.citations) {
+        const host = new URL(citation.url).hostname;
+        hosts.set(host, (hosts.get(host) ?? 0) + 1);
+      }
+      console.log(`  ${node.topic}: ${JSON.stringify(Object.fromEntries(hosts))} verified=${article.credibilityVerified}`);
+    }
   }
   console.log(`\nstats ${JSON.stringify(stats)}`);
   const calls = stack.llmCalls();

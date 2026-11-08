@@ -1,3 +1,5 @@
+import type { SourceProvider } from "../schemas/evidence.schema";
+
 // Pure source-credibility rules: a URL's domain maps to a score in [0, 1]. Heuristic by design - it is
 // deterministic, so it is unit-testable, and it costs no extra LLM call per node. Used only by the article
 // pass's evidence guardrail, never by construction (docs/conflicts.md C05).
@@ -8,7 +10,12 @@ const SCORE = {
   GOVERNMENT: 0.95,
   ACADEMIC: 0.9,
   REFERENCE: 0.85,
+  // OpenAlex indexes nearly everything with a DOI, peer-reviewed or not: above an encyclopedia, below a press (C146).
+  SCHOLARLY_INDEX: 0.8,
   ENCYCLOPEDIA: 0.75,
+  // Wire services with editorial standards; GDELT gives only their headlines, so it clears the gate but the writer
+  // prompt uses a news source for current context only (C146).
+  NEWS: 0.7,
   UNKNOWN: 0.5,
   USER_GENERATED: 0.25,
   MALFORMED: 0,
@@ -38,6 +45,18 @@ const REFERENCE_HOSTS = [
   "bbc.co.uk",
   "who.int",
 ];
+
+const NEWS_HOSTS = ["reuters.com", "apnews.com"];
+
+// DOI resolvers say nothing about a work by their host, so a DOI link is scored by the provider that found it:
+// Crossref is searched only within Cambridge, Oxford and IEEE (SEARCH.CROSSREF_MEMBERS), IEEE Xplore is IEEE's
+// own index, and OpenAlex is everything (C146). Any other provider's DOI link falls through to the URL rules.
+const DOI_HOSTS = ["doi.org", "dx.doi.org"];
+const DOI_SCORE_BY_PROVIDER: Partial<Record<SourceProvider, number>> = {
+  crossref: SCORE.ACADEMIC,
+  ieee: SCORE.ACADEMIC,
+  openalex: SCORE.SCHOLARLY_INDEX,
+};
 
 // Wikipedia and its siblings sit just above the unknown-domain default: broad and usually accurate, but
 // openly editable, so on their own two Wikipedia pages should not carry a node.
@@ -89,13 +108,18 @@ function matches(host: string, candidates: readonly string[]): boolean {
 
 // A malformed or non-web URL scores 0 rather than the unknown default: it cannot be cited, so it must
 // never help a node pass the credibility gate.
-export function scoreSource(url: string): number {
+export function scoreSource(url: string, provider?: SourceProvider): number {
   const host = hostOf(url);
   if (host === undefined) return SCORE.MALFORMED;
+  if (provider !== undefined && matches(host, DOI_HOSTS)) {
+    const byProvider = DOI_SCORE_BY_PROVIDER[provider];
+    if (byProvider !== undefined) return byProvider;
+  }
   if (matches(host, GOVERNMENT_SUFFIXES)) return SCORE.GOVERNMENT;
   if (matches(host, ACADEMIC_SUFFIXES)) return SCORE.ACADEMIC;
   if (matches(host, REFERENCE_HOSTS)) return SCORE.REFERENCE;
   if (matches(host, ENCYCLOPEDIA_HOSTS)) return SCORE.ENCYCLOPEDIA;
+  if (matches(host, NEWS_HOSTS)) return SCORE.NEWS;
   if (matches(host, USER_GENERATED_HOSTS)) return SCORE.USER_GENERATED;
   return SCORE.UNKNOWN;
 }

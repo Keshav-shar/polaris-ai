@@ -8,8 +8,8 @@
 
 **Planned contents:**
 - `secrets.ts` — `secretValues(env)`: every configured secret VALUE, for redaction by value in stored failure reasons and script output; replaced the old LLM-key-only list (C103)
-- `search.ts` — `createSearchFromEnv(env)`: the only place a search adapter is built; always wrapped in the bounded cache (10.9, C126). Wikipedia unless
-  `SEARCH_PROVIDER=tavily` (Phase 9)
+- `search.ts` — `createSearchFromEnv(env, logger)`: the only place search adapters are built; always wrapped in the bounded cache (10.9, C126). One adapter per
+  name in `SEARCH_PROVIDERS`, merged by `createMultiSourceSearch` (C146)
 - `llm.ts` — `createLlmFromEnv(env, logger?, onCall?)` (each member gets its `@effort` ceiling, the logger and the usage observer, C113, C116) → `LlmStack` (`llm`, `activeModel()`, `cacheNamespace()`, `dailyRequestBudget`): the only place LLM adapters are built; call once per process so each limiter is shared. Builds the one provider as a single adapter or a rotating model pool (`LLM_MODELS`), plus `writerLlm` - its own pool when `LLM_WRITER_MODELS` names one (C92), the same instance otherwise. There is no second provider to fail over to since C93: the pool is the resilience (Phase 3, C43; pool C68; one provider C93)
   Since 10.10 (C129-C131): one priority limiter and one pacer per model id (`createSharedLimits`), handed to BOTH pools; the requests/minute window is a `RateWindowPort` (memory store by default, an argument so Phase 13 can pass DynamoDB); a single model is a one-member pool. `build-stack.ts` builds both queues with `order: "priority"` and exposes `boostArticle`; `container.ts` adds `boostArticle()` (never starts a worker).
 - `build-stack.ts` — the whole build path on `QUEUE_MODE=memory`: memory adapters, agents, node constructor (with the expansion cache), fan-in, the use-cases (`start-tree-build`, `expand-node`, `write-article`, `get-tree`, `get-node`, `list-runs`, `handle-dead-letter`, `halt-run`) and BOTH workers, which run at the same time since C91. The writer gets its own `generateStructured` when `LLM_WRITER_MODELS` names a second pool (C92). Exposes `llmCalls()` (structured calls by label, for the smoke report), `llmUsage()` (provider requests, tokens and time per label, from the adapters' `onCall`, C116), `activeModel()` so callers can report the model that ANSWERED (after a pool rotation) and `cacheNamespace()`, which is what the expansion cache is keyed by - never the answering model (Phase 6; `halt-run` C55, `activeModel` C59, `cacheNamespace` C69)
@@ -18,3 +18,21 @@
 
 **Design notes:**
 - Module-level memoization is allowed here only (warm Lambda containers reuse clients).
+
+**Phase 12 (C137):**
+- `storage.ts` — `createStorageFromEnv(env)` -> `Storage` (`kind`, run / tree / article / evidence / quiz / expansion
+  cache / usage): Postgres when `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set, memory otherwise;
+  `createMemoryStorage()` for scripts and tests. The in-flight stores stay in memory until Phase 13
+- `auth.ts` — `createAuthVerifierFromEnv(env)`: the JWKS verifier when Supabase is configured, else undefined
+- `build-stack.ts` takes `{ storage }` (default: fresh memory, so a CLI script never writes to the real database);
+  `authRequired = storage.kind === "postgres"` turns on the per-user limits and `list-runs`' owner scope
+- `container.ts` builds storage + verifier EAGERLY (no LLM needed), exposes `authRequired`, `authVerifier`,
+  `setRunVisibility()` and `recoverInterruptedRuns()` (Postgres + memory queues: halts runs a dead process left
+  building, with `INTERRUPTED_RUN_REASON`)
+
+**Phase 13 (2026-11-07, C145):** `build-stack.ts` = `createCoreStack(env, logger, { storage, infra })` over a
+`BuildInfra` + `createMemoryInfra` + `createBuildStack` (memory infra + local workers, unchanged for callers);
+`read-stack.ts` (`createReadStack`: kickoff + read path + Phase C writes, no LLM); `aws-infra.ts` (`createAwsInfra`
+for the Lambdas, `createAwsKickoffInfra` for Express: queues + node state only); `worker-container.ts`
+(`createWorkerContainer`: SSM secrets over the env, then the core stack on AWS infra; `getWorkerContainer` memoized on
+success; `createLambdaHandlers`). `container.ts` under `QUEUE_MODE=sqs` builds the read stack and no worker.

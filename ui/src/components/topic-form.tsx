@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { startTree } from "../lib/api-client";
-import { friendlyError } from "../lib/friendly-error";
+import { friendlyError, needsSignIn } from "../lib/friendly-error";
 
 const PROMPT_MAX_LENGTH = 500; // TreeRequestBody: z.string().trim().min(1).max(500)
 const MAX_DEPTH_CEILING = 6; // service/src/config/constants.ts
@@ -34,11 +35,13 @@ export function TopicForm({
   const [depth, setDepth] = useState("auto");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
-  const [toast, setToast] = useState(false);
+  const [signInFirst, setSignInFirst] = useState(false);
+  // The toast's text: a started map, plus how many old maps the stored-map cap removed to make room.
+  const [toast, setToast] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(false), TOAST_MS);
+    if (toast === undefined) return;
+    const timer = setTimeout(() => setToast(undefined), TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
 
@@ -49,14 +52,20 @@ export function TopicForm({
     if (busy || prompt.trim() === "") return;
     setSubmitting(true);
     setError(undefined);
+    setSignInFirst(false);
     try {
-      const { runId } = await startTree(prompt.trim(), depth === "auto" ? undefined : Number(depth));
+      const { runId, prunedRuns } = await startTree(prompt.trim(), depth === "auto" ? undefined : Number(depth));
       setPrompt("");
-      setToast(true);
+      setToast(
+        prunedRuns === undefined
+          ? "Your map is on its way…"
+          : `Your map is on its way. We removed your ${prunedRuns} oldest map${prunedRuns === 1 ? "" : "s"} to make room.`,
+      );
       onStarted(runId);
     } catch (err) {
       // A 429 is a "not right now", not a failure: friendlyError says when to try again.
-      setError(friendlyError(err, "We couldn't start your map. Please try again."));
+      if (needsSignIn(err)) setSignInFirst(true);
+      else setError(friendlyError(err, "We couldn't start your map. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -137,14 +146,22 @@ export function TopicForm({
             {error}
           </p>
         )}
+        {signInFirst ? (
+          <p role="alert" className="rounded-xl border border-line bg-gold-soft p-3 text-sm text-ink">
+            Sign in first, so your map is saved to your library.{" "}
+            <Link href="/sign-in?next=/" className="font-semibold text-gold-ink hover:underline">
+              Sign in
+            </Link>
+          </p>
+        ) : null}
       </form>
 
-      {toast ? (
+      {toast !== undefined ? (
         <div
           role="status"
           className="fixed right-6 bottom-6 z-50 animate-toast-in rounded-xl bg-ink px-6 py-3 text-xs font-semibold uppercase tracking-wider text-parchment shadow-lg"
         >
-          Your map is on its way…
+          {toast}
         </div>
       ) : null}
     </>

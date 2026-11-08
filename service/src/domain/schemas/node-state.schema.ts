@@ -33,6 +33,12 @@ export const NodeState = z.object({
   // A learner boosted this node before its article message existed; expand-node sends that message boosted
   // (C128). Set-only.
   boosted: z.literal(true).optional(),
+  // The article claim lease (A18, C142): which delivery holds it and until when (epoch ms). Only set by a claim
+  // that passed a lease; the local path never does, because the memory queue never copies a message.
+  claimedBy: z.string().optional(),
+  claimedUntil: z.number().int().optional(),
+  // The last attempt's failure, redacted, for the dead-letter handler: an SQS record carries no error (A17).
+  lastError: z.string().optional(),
 });
 export type NodeState = z.infer<typeof NodeState>;
 
@@ -46,5 +52,8 @@ export const RunState = z.object({
   nodesFailed: z.number().int().min(0).default(0),
   articlesDone: z.number().int().min(0).default(0),
   articlesFailed: z.number().int().min(0).default(0),
+  // Set once when the run halts (A16): a fleet cannot "stop the worker", so every handler checks this at claim and
+  // drops a halted run's message. Epoch ms.
+  haltedAt: z.number().int().optional(),
 });
 export type RunState = z.infer<typeof RunState>;

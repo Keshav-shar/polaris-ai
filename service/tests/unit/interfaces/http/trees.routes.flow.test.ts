@@ -24,6 +24,7 @@ async function serve(options: HarnessOptions = {}) {
         return harness.startTreeBuild;
       },
       getTree: () => harness.getTree,
+      setRunVisibility: () => harness.setRunVisibility,
     }),
   );
   const app = createApp({

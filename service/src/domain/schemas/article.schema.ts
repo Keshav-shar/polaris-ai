@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ARTICLE } from "../../config/constants";
 import { countWords } from "../../shared/words";
 import { EvidenceItem } from "./evidence.schema";
+import { LearnerProfile } from "./insight.schema";
 import { QuizQuestion } from "./quiz.schema";
 import { HttpUrl } from "./url.schema";
 
@@ -27,6 +28,8 @@ export const ArticleContext = z.strictObject({
   // be smuggled in by a caller that builds the context by hand.
   children: z.array(z.strictObject({ topic: z.string(), brief: z.string() })),
   evidence: z.array(EvidenceItem),
+  // The build owner's profile (C139): adjusts pitch and style, never scope or format.
+  learner: LearnerProfile.optional(),
 });
 export type ArticleContext = z.infer<typeof ArticleContext>;
 

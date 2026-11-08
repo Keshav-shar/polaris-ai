@@ -29,3 +29,8 @@
 **Design notes:**
 - Wire codes are lower_snake (`run_not_found`), while `DomainError.code` is UPPER_SNAKE (`RUN_NOT_FOUND`): the HTTP vocabulary is deliberately its own, so renaming a domain error never silently changes the API.
 - Express 5 exposes `req.params` through a getter and leaves `req.body` untyped, which is why the parsed value goes to `res.locals` rather than overwriting the request.
+- `auth.middleware.ts` — built (Phase 12, C105). `createAuthMiddleware(verifier | undefined)`, mounted on `/api`
+  before every router: no header -> anonymous; `Bearer <token>` (<= 4096 chars) verified -> `readCaller(res)`;
+  a present but invalid/malformed header -> 401 (never silently anonymous); auth off -> header ignored
+- `error-handler.middleware.ts` also maps `UnauthenticatedError` (401), `UserQuotaExhaustedError` (429 +
+  `Retry-After`) and `DependencyUnavailableError` (503 + `Retry-After`, detail logged only)

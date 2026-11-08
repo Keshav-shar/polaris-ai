@@ -13,3 +13,7 @@
 **Design notes:**
 - If IaC is ever added (CDK), it must reproduce exactly the manual resources, and stay free-tier.
 - Accounts created after 2025-07-15 get a credit-based Free Plan. Confirm each service before deploy; set the $1 budget alarm first.
+
+**Built (Phase 13, 2026-11-07):** `local/compose.yaml` - ElasticMQ 1.6.11 + DynamoDB Local 2.6.1 by default, `api` +
+`worker` under the `app` profile; the table and queues are created by `npm --prefix service run aws:local`, not an
+init container. See `docs/setup.md` "Local AWS parity".

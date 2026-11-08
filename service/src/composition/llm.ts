@@ -55,6 +55,11 @@ function createSharedLimits(config: LlmEnv, window: RateWindowPort, now: () => n
 // One model (rotation `off`, or a list of one) is a ONE-member pool under `exhaustion` - the old single
 // adapter's behaviour, its own retries included - so it gets the shared limiter and its pacer too, and keeps
 // the bare model id as its cache namespace (C131).
+//
+// With LLM_API_KEY_NEXT every model is offered once per key, model-major ([m1@key1, m1@key2, m2@key1, ...]),
+// so the lead model stays first and round-robin alternates accounts. Each (key, model) gets its own pacer,
+// because each is its own Groq bucket. Rotation `off` is still ONE model on ONE key. The cache namespace
+// depends on the models only: the key does not change what a model writes.
 function createPoolLlm(
   config: LlmEnv,
   shared: SharedLimits,
@@ -63,24 +68,35 @@ function createPoolLlm(
   // Which pool to build. Defaults to the construction pool; the writer passes its own.
   pool: readonly [PoolModel, ...PoolModel[]] = config.models,
 ): SwitchableLlm {
-  const single = config.rotation === "off" || pool.length === 1;
+  const off = config.rotation === "off";
+  const keys = off ? [config.apiKeys[0]] : config.apiKeys;
+  const models = off ? [pool[0]] : pool;
+  const single = models.length * keys.length === 1;
   const rotating = !single && config.rotation !== "exhaustion";
-  const members = (single ? [pool[0]] : pool).map(
-    (m): PoolMember => ({
-      llm: createOpenAiCompatibleLlm({
-        ...config,
+  const members = models.flatMap((m) =>
+    keys.map((apiKey, k): PoolMember => {
+      // Key 1 keeps the bare model id as its pacing key, so a one-key setup paces exactly as before. The label
+      // names the key's POSITION, never any of its characters.
+      const account = `key${k + 1}`;
+      const pacer = shared.pacerFor(k === 0 ? m.id : `${m.id}#${account}`);
+      return {
+        llm: createOpenAiCompatibleLlm({
+          ...config,
+          apiKey,
+          model: m.id,
+          // Its own reasoning ceiling, the shared logger + usage observer (C113, C116), and its pacer.
+          maxReasoningEffort: m.maxReasoningEffort,
+          logger,
+          ...(onCall === undefined ? {} : { onCall }),
+          pacer,
+          // Both rotating policies hand the 429 decision to the POOL, so the member must not sleep through it.
+          ...(rotating ? { maxRetries: 0 } : {}),
+        }),
         model: m.id,
-        // Its own reasoning ceiling, the shared logger + usage observer (C113, C116), and its pacer.
-        maxReasoningEffort: m.maxReasoningEffort,
-        logger,
-        ...(onCall === undefined ? {} : { onCall }),
-        pacer: shared.pacerFor(m.id),
-        // Both rotating policies hand the 429 decision to the POOL, so the member must not sleep through it.
-        ...(rotating ? { maxRetries: 0 } : {}),
-      }),
-      model: m.id,
-      dailyRequestBudget: m.dailyRequestBudget,
-      pacer: shared.pacerFor(m.id),
+        ...(keys.length > 1 ? { account } : {}),
+        dailyRequestBudget: m.dailyRequestBudget,
+        pacer,
+      };
     }),
   ) as [PoolMember, ...PoolMember[]];
 
@@ -89,7 +105,8 @@ function createPoolLlm(
     policy: single || config.rotation === "off" ? "exhaustion" : config.rotation,
     maxConcurrency: config.maxConcurrency,
     limiter: shared.limiter,
-    ...(single ? { namespace: pool[0].id } : {}),
+    // One MODEL keeps its bare id as the namespace however many keys serve it (C131).
+    ...(models.length === 1 ? { namespace: models[0].id } : {}),
     logger,
   });
 }
@@ -118,6 +135,8 @@ export function createLlmFromEnv(
   logger?.info("llm selected", {
     model: config.model,
     rotation: config.rotation,
+    // How many accounts, never which: a count is all an operator needs to see the second key is live.
+    keys: config.rotation === "off" ? 1 : config.apiKeys.length,
     models: config.models.map((m) => (m.maxReasoningEffort === undefined ? m.id : `${m.id}@${m.maxReasoningEffort}`)),
     writerModels:
       config.writerModels?.map((m) => (m.maxReasoningEffort === undefined ? m.id : `${m.id}@${m.maxReasoningEffort}`)) ??

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { SEARCH } from "../../../../src/config/constants";
 import { TransportUnavailableError } from "../../../../src/domain/errors/transport-unavailable.error";
 import { createTavilySearch } from "../../../../src/infrastructure/search/tavily.adapter";
-import { capText, createWikipediaSearch, stripHtml } from "../../../../src/infrastructure/search/wikipedia.adapter";
+import { capText, stripHtml } from "../../../../src/infrastructure/search/search-http";
+import { createWikipediaSearch } from "../../../../src/infrastructure/search/wikipedia.adapter";
 
 // A recorded `generator=search` + `prop=extracts` response (formatversion 2, 2026-10-07, trimmed): pages come
 // back UNORDERED with their search rank in `index`, and the intro as plain text. No network in this suite.

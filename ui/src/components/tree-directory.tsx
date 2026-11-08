@@ -1,7 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import type { TreeNode, TreeNodeStatus } from "../lib/contract";
+import type { RunProgress, TreeNode, TreeNodeStatus } from "../lib/contract";
+
+// Mirrors QUIZ_CONFIG.QUESTIONS_PER_TOPIC: a quick check has this many questions.
+const QUESTIONS_PER_LESSON = 3;
 
 // The left-hand topic list. This is where the WHOLE tree stays navigable, which is what lets the map draw
 // only a neighbourhood: a 500-node run is a scrollable list here and an unreadable hairball there.
@@ -20,13 +23,17 @@ function Row({
   node,
   focusId,
   onFocus,
+  progress,
 }: {
   node: TreeNode;
   focusId: string;
   onFocus: (id: string) => void;
+  progress: RunProgress | undefined;
 }) {
   const active = node.id === focusId;
   const written = node.articleStatus === "done";
+  // The signed-in reader's own markers (C106): read, and the best quick-check score.
+  const mine = progress?.[node.id];
 
   const label = (
     <div
@@ -43,6 +50,20 @@ function Row({
       >
         <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[node.status]}`} aria-hidden="true" />
         <span className="truncate">{node.topic}</span>
+        {mine?.quizBest !== undefined ? (
+          <span
+            title={`Best quick check: ${mine.quizBest} of ${QUESTIONS_PER_LESSON}`}
+            className={`shrink-0 rounded px-1 text-[10px] ${
+              mine.quizBest === QUESTIONS_PER_LESSON ? "bg-gold-soft font-semibold text-gold-ink" : "text-faint"
+            }`}
+          >
+            {mine.quizBest}/{QUESTIONS_PER_LESSON}
+          </span>
+        ) : mine?.read === true ? (
+          <span title="You have read this lesson" className="shrink-0 text-[10px] text-gold-ink">
+            ✓
+          </span>
+        ) : null}
       </button>
 
       {/* The same affordance the map gives, so the two surfaces can never disagree about whether a node
@@ -67,7 +88,7 @@ function Row({
         <summary className="list-none">{label}</summary>
         <ul className="ml-3 space-y-0.5 border-l border-rule pl-2">
           {node.children.map((child) => (
-            <Row key={child.id} node={child} focusId={focusId} onFocus={onFocus} />
+            <Row key={child.id} node={child} focusId={focusId} onFocus={onFocus} progress={progress} />
           ))}
         </ul>
       </details>
@@ -80,11 +101,13 @@ export function TreeDirectory({
   focusId,
   onFocus,
   nodeCount,
+  progress,
 }: {
   tree: TreeNode | null;
   focusId: string;
   onFocus: (id: string) => void;
   nodeCount: number;
+  progress?: RunProgress | undefined;
 }) {
   return (
     <aside className="parchment-card sticky top-6 rounded-2xl p-4">
@@ -99,10 +122,10 @@ export function TreeDirectory({
       ) : (
         <>
           <ul className="max-h-[26rem] space-y-0.5 overflow-y-auto pr-1">
-            <Row node={tree} focusId={focusId} onFocus={onFocus} />
+            <Row node={tree} focusId={focusId} onFocus={onFocus} progress={progress} />
           </ul>
           <p className="mt-3 border-t border-rule pt-2 text-[10px] text-faint">
-            Click a name to see it on the map · ★ opens the lesson
+            Click a name to see it on the map · ★ opens the lesson{progress === undefined ? "" : " · ✓ read · n/3 best quick check"}
           </p>
         </>
       )}

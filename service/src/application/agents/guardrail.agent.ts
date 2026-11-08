@@ -1,9 +1,8 @@
-import { CREDIBILITY, GROUNDEDNESS, QUIZ_CONFIG } from "../../config/constants";
+import { CREDIBILITY, QUIZ_CONFIG } from "../../config/constants";
 import { sourceIdentity } from "../../domain/credibility/credibility-scorer";
-import type { ArticleOutput, WriterOutput } from "../../domain/schemas/article.schema";
+import type { WriterOutput } from "../../domain/schemas/article.schema";
 import type { EvidenceItem } from "../../domain/schemas/evidence.schema";
 import type { QuizQuestion } from "../../domain/schemas/quiz.schema";
-import { contentWords } from "../../shared/words";
 
 export type CredibilityAssessment = {
   // The gate: at least CREDIBILITY.MIN_CREDIBLE_SOURCES sources scoring >= CREDIBILITY.MIN_SCORE.
@@ -19,11 +18,10 @@ export type CredibilityAssessment = {
 // What "distinct sources" counts
 // ------------------------------
 // docs/article-generation.md says "at least 2 distinct sources scoring >= 0.6". DISTINCT DOCUMENTS, not
-// distinct domains. That is forced by the default provider: SEARCH_PROVIDER=wikipedia returns only
-// wikipedia.org URLs, so a distinct-DOMAIN rule would make the gate unreachable and mark every article
-// unverified - a guardrail that always fails teaches nothing. Two different Wikipedia articles are two
-// sources here. `distinctDomains` is still reported so single-site evidence is visible rather than hidden,
-// and a future multi-provider setup can tighten the rule on real data.
+// distinct domains. That was forced by a Wikipedia-only provider, and is kept under several providers (C146)
+// because a provider can still fail for one lesson and leave only Wikipedia: a distinct-DOMAIN rule would then
+// mark that article unverified for an outage, not for its evidence. `distinctDomains` is reported so
+// single-site evidence stays visible, and the rule can be tightened on measured multi-provider data.
 export function assessCredibility(evidence: readonly EvidenceItem[]): CredibilityAssessment {
   const credible = evidence
     .filter((item) => item.credibility >= CREDIBILITY.MIN_SCORE)
@@ -49,65 +47,6 @@ export function assessCredibility(evidence: readonly EvidenceItem[]): Credibilit
 // evidence - not one written from bad evidence.
 export function checkCredibility(evidence: readonly EvidenceItem[]): CredibilityAssessment {
   return assessCredibility(evidence);
-}
-
-type Citation = ArticleOutput["citations"][number];
-
-export type CitationVerdict = {
-  citation: Citation;
-  // grounded   - the cited source contains enough of the claim's content words, and every number in it;
-  // ungrounded - it does not (or the source is not one of the node's): the citation is dropped (C124);
-  // unjudged   - the claim is too short to judge lexically; kept, never counted as grounded.
-  verdict: "grounded" | "ungrounded" | "unjudged";
-  // Share of the claim's content words found in the cited source, 0..1.
-  score: number;
-  reason?: string;
-};
-
-export type GroundednessReport = {
-  verdicts: CitationVerdict[];
-  grounded: number;
-  ungrounded: number;
-  unjudged: number;
-};
-
-// Groundedness, lexically (C124): does each citation's CLAIM appear to come from the source it cites? A model
-// can cite a real source for a sentence that source never says - that is still a hallucination, merely one
-// with a real link attached, and it is the kind a reader is least likely to catch. Pure and deterministic:
-// the share of the claim's content words (`contentWords`) present in the cited source's title + text must
-// reach GROUNDEDNESS.MIN_OVERLAP, and EVERY number in the claim must appear in the source, because an
-// invented figure is the most damaging form. A claim with fewer than GROUNDEDNESS.MIN_CLAIM_WORDS content
-// words cannot be judged this way and is reported as such rather than guessed at.
-//
-// What it cannot do: tell a faithful paraphrase that uses different words from an invention. That is why the
-// thresholds are calibrated on real output, and why a verdict only ever DROPS a citation - it never rewrites
-// or removes article text.
-export function assessGroundedness(
-  citations: readonly Citation[],
-  evidence: readonly EvidenceItem[],
-): GroundednessReport {
-  const sources = new Map(evidence.map((item) => [item.url, new Set(contentWords(`${item.title} ${item.snippet}`))]));
-  const verdicts = citations.map((citation): CitationVerdict => {
-    const source = sources.get(citation.url);
-    if (source === undefined) return { citation, verdict: "ungrounded", score: 0, reason: "not one of the node's sources" };
-    const claim = [...new Set(contentWords(citation.claim))];
-    const missingNumber = claim.find((word) => /^\p{N}+$/u.test(word) && !source.has(word));
-    if (missingNumber !== undefined) {
-      return { citation, verdict: "ungrounded", score: 0, reason: `number ${missingNumber} not in the source` };
-    }
-    const found = claim.filter((word) => source.has(word)).length;
-    const score = claim.length === 0 ? 0 : found / claim.length;
-    if (claim.length < GROUNDEDNESS.MIN_CLAIM_WORDS) return { citation, verdict: "unjudged", score };
-    return score >= GROUNDEDNESS.MIN_OVERLAP
-      ? { citation, verdict: "grounded", score }
-      : { citation, verdict: "ungrounded", score, reason: "too few of the claim's words are in the source" };
-  });
-  return {
-    verdicts,
-    grounded: verdicts.filter((v) => v.verdict === "grounded").length,
-    ungrounded: verdicts.filter((v) => v.verdict === "ungrounded").length,
-    unjudged: verdicts.filter((v) => v.verdict === "unjudged").length,
-  };
 }
 
 const normalized = (text: string): string => text.trim().replace(/\s+/g, " ").toLowerCase();
@@ -139,39 +78,36 @@ export function checkQuizSanity(
 }
 
 export type ArticleGuardReport = {
-  groundedness: GroundednessReport;
+  // Citations whose url is not one of the node's sources: an invented link, dropped (C147).
+  foreignCitations: number;
   quizProblems: string[];
 };
 
-// Everything the writer's draft must pass before it is stored, in one place: ungrounded citations are
-// dropped (C124) and a quiz with any sanity problem is dropped (C125). The article TEXT is never touched -
-// a guardrail that rewrote content would be a second, unsourced author.
+// Everything the writer's draft must pass before it is stored, in one place. Since C147 this is STRUCTURAL only:
+// a citation is kept when its url is one of the node's sources - a set lookup, no source text is re-read - and a
+// quiz with any sanity problem is dropped (C125). The lexical re-check of each citation's claim against its
+// source (C124) no longer runs here: citations and comparisons come from the one multi-source search (C146), and
+// groundedness is measured offline by scripts/writer-eval.ts instead. The article TEXT is never touched - a
+// guardrail that rewrote content would be a second, unsourced author.
 export function guardArticle(
   draft: WriterOutput,
   evidence: readonly EvidenceItem[],
 ): { draft: WriterOutput; report: ArticleGuardReport } {
-  const groundedness = assessGroundedness(draft.citations, evidence);
+  const allowed = new Set(evidence.map((item) => item.url));
+  const citations = draft.citations.filter((citation) => allowed.has(citation.url));
   const { questions, ...rest } = draft;
   // An absent quiz is a legitimate state (C80), not a problem to report.
-  const quizProblems =
-    questions === undefined || questions.length === 0
-      ? []
-      : checkQuizSanity(questions, new Set(evidence.map((item) => item.url)));
+  const quizProblems = questions === undefined || questions.length === 0 ? [] : checkQuizSanity(questions, allowed);
   const keepQuiz = questions !== undefined && questions.length > 0 && quizProblems.length === 0;
   return {
-    draft: {
-      ...rest,
-      citations: groundedness.verdicts.filter((v) => v.verdict !== "ungrounded").map((v) => v.citation),
-      ...(keepQuiz ? { questions } : {}),
-    },
-    report: { groundedness, quizProblems },
+    draft: { ...rest, citations, ...(keepQuiz ? { questions } : {}) },
+    report: { foreignCitations: draft.citations.length - citations.length, quizProblems },
   };
 }
 
 export type GuardrailAgent = {
   assessCredibility(evidence: readonly EvidenceItem[]): CredibilityAssessment;
   checkCredibility(evidence: readonly EvidenceItem[]): CredibilityAssessment;
-  assessGroundedness(citations: readonly Citation[], evidence: readonly EvidenceItem[]): GroundednessReport;
   checkQuizSanity(questions: readonly QuizQuestion[] | undefined, allowedUrls: ReadonlySet<string>): string[];
   guardArticle(draft: WriterOutput, evidence: readonly EvidenceItem[]): { draft: WriterOutput; report: ArticleGuardReport };
 };
@@ -179,5 +115,5 @@ export type GuardrailAgent = {
 // A factory for symmetry with the other agents, though this one needs no ports: every rule here is pure,
 // so the whole guardrail is testable without a fake (agents are factories - .claude/CLAUDE.md).
 export function createGuardrailAgent(): GuardrailAgent {
-  return { assessCredibility, checkCredibility, assessGroundedness, checkQuizSanity, guardArticle };
+  return { assessCredibility, checkCredibility, checkQuizSanity, guardArticle };
 }

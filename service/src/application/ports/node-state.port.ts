@@ -48,7 +48,12 @@ export type NodeStatePort = {
   // has a stored `article` comes back with it, so a retry never calls the writer again.
   // Throws when the node does not exist: an article message for an unconstructed node is a bug, not a
   // race, and swallowing it would hide a broken enqueue.
-  claimArticle(nodeId: string): Promise<NodeState>;
+  //
+  // `lease` (A18, C142): with one, the claim also reserves the article for `claimant` until `nowMs +
+  // ARTICLE.CLAIM_LEASE_MS`, and a claim by a DIFFERENT claimant inside a live lease throws ArticleLeaseHeldError
+  // instead of returning. The same claimant (a redelivery of its own message) always gets it back. Without one,
+  // no lease is taken or checked - the local path, where the queue never copies a message.
+  claimArticle(nodeId: string, lease?: ArticleLease): Promise<NodeState>;
 
   // Rule 2, for articles. Write-once: an existing draft is returned as-is rather than overwritten, so two
   // deliveries of the same node can never store different articles or different questions.
@@ -62,4 +67,13 @@ export type NodeStatePort = {
   // Records a learner's boost on the node, so the article message expand-node has not sent yet goes out
   // boosted (C128). Idempotent; resolves false when the node has no state yet.
   markBoosted(nodeId: string): Promise<boolean>;
+
+  // A17, made concrete: the queue consumer records each failed attempt's redacted reason here, because an SQS
+  // record reaching the dead-letter handler carries no error. Overwritten by every failure; never cleared.
+  recordError(nodeId: string, reason: string): Promise<void>;
+  lastError(nodeId: string): Promise<string | undefined>;
 };
+
+// Who is claiming an article and when. `claimant` is stable across redeliveries of ONE message (its SQS message id,
+// carried through stall re-sends) and different for a boosted copy.
+export type ArticleLease = { claimant: string; nowMs: number };

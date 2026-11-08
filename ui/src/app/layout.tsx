@@ -10,7 +10,10 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    // suppressHydrationWarning covers THESE two elements' own attributes only (one level deep): browser extensions
+    // (password managers, ColorZilla, security add-ons) stamp attributes on <html>/<body> before React loads. Any
+    // real mismatch in the app's own markup below still reports.
+    <html lang="en" suppressHydrationWarning>
       {/* Fonts of the parchment theme (docs/uimockcode.txt). A <link> rather than next/font keeps
           `next build` free of a network fetch; preconnect first so headings do not arrive late. */}
       <head>
@@ -21,7 +24,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-screen bg-parchment text-ink-soft">
+      <body className="min-h-screen bg-parchment text-ink-soft" suppressHydrationWarning>
         <div className="flex min-h-screen flex-col">
           <SiteHeader />
           <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-10 sm:px-6">{children}</main>

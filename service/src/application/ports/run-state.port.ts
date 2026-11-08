@@ -21,4 +21,8 @@ export type RunStatePort = {
   // returns the new totals so the caller can decide whether the run is finished. The fields have existed
   // on RunState since Phase 2 (amendment A3 / C38) with no way to move them - that was gap 4.
   countArticle(runId: string, outcome: TerminalStatus): Promise<RunState>;
+
+  // A16: marks the run halted in the in-flight store, once (the first halt wins), so every consumer can drop its
+  // messages at claim. The durable record is halted separately, by halt-run through RunRepositoryPort.
+  halt(runId: string, nowMs: number): Promise<void>;
 };

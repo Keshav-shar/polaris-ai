@@ -9,6 +9,24 @@ import { MAX_DEPTH_CEILING } from "../../config/constants";
 export const RunStatus = z.enum(["constructing", "constructed", "done", "failed", "halted"]);
 export type RunStatus = z.infer<typeof RunStatus>;
 
+// Who may READ a run (C105). private = its owner only (the default); unlisted = anyone with the link; public =
+// also listed for everyone. Building always needs a signed-in owner.
+export const RunVisibility = z.enum(["private", "unlisted", "public"]);
+export type RunVisibility = z.infer<typeof RunVisibility>;
+
+// The run-level counters the UI shows. Live in the expiring run state while a run builds, and copied onto the
+// durable record at each terminal transition so a finished run still has them (C107).
+export const RunStats = z.object({
+  nodesDone: z.number().int().min(0),
+  nodesFailed: z.number().int().min(0),
+  // Children MAX_NODES_PER_RUN refused. Above 0 the tree is complete as built but shallower or
+  // narrower than `maxDepth` implies - the UI must say so rather than present it as the full tree.
+  nodesSkipped: z.number().int().min(0),
+  articlesDone: z.number().int().min(0),
+  articlesFailed: z.number().int().min(0),
+});
+export type RunStats = z.infer<typeof RunStats>;
+
 // The durable run record. Kept in a permanent store, never in the expiring node-state store
 // (service/README.md, known plan defect 2).
 export const Run = z.object({
@@ -18,5 +36,12 @@ export const Run = z.object({
   status: RunStatus,
   // One readable line for why a run is `halted` or `failed`, shown instead of a stack trace.
   haltReason: z.string().optional(),
+  // Absent only on a run built with auth off (no Supabase configured, C137): such a run has no owner and is
+  // readable by anyone, which is how every run behaved before Phase 12.
+  ownerId: z.uuid().optional(),
+  visibility: RunVisibility.optional(),
+  // The learner's raw prompt, kept for the owner. Never part of any response about someone else's run.
+  request: z.string().optional(),
+  stats: RunStats.optional(),
 });
 export type Run = z.infer<typeof Run>;

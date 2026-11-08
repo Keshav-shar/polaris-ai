@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SearchPort, SearchResult } from "../../../../src/application/ports/search.port";
 import { createCachedSearch } from "../../../../src/infrastructure/search/cached-search.adapter";
 
-function counting(results: SearchResult[] = [{ url: "https://a.test/1", title: "A", snippet: "a" }]) {
+function counting(results: SearchResult[] = [{ url: "https://a.test/1", title: "A", snippet: "a", provider: "wikipedia" }]) {
   const queries: string[] = [];
   let fail = false;
   const search: SearchPort = {

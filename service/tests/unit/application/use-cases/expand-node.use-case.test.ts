@@ -245,3 +245,23 @@ describe("expand-node use-case", () => {
     expect((await h.treeRepo.getTree(runId))?.status).toBe("pending");
   });
 });
+
+// C144: a redelivery of an ALREADY-EXPANDED node (crash after its result was stored, before the ack) used to move
+// it back to `in_progress`. Its children's completions then stopped at the fan-in's `expanded` check, so the node -
+// and the run - never completed. Found reading the store while writing its DynamoDB twin.
+describe("C144: a redelivered expanded node still completes", () => {
+  it("the run reaches constructed after the root is delivered twice", async () => {
+    const h = buildHarness({ breadth: 2 });
+    await h.runRepo.create({ runId, topic: "photosynthesis", maxDepth: 2, status: "constructing" });
+    const root = rootOf(2);
+    await h.expandNode.execute(root);
+    await h.expandNode.execute(root); // the redelivery
+    expect((await h.nodeState.claim({ runId, nodeId: root.nodeId, parentId: null, depth: 0 })).status).toBe("expanded");
+    for (;;) {
+      const [receipt] = await h.queue.receive(1);
+      if (receipt === undefined) break;
+      await h.expandNode.execute(receipt.message);
+    }
+    expect((await h.runRepo.get(runId))?.status).toBe("constructed");
+  });
+});

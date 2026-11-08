@@ -21,7 +21,7 @@ out/
 cdk.out/
 *.tsbuildinfo
 next-env.d.ts
-
+.temp/
 # Test and coverage
 coverage/
 e2e/

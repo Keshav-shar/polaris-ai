@@ -1,8 +1,7 @@
 import { z } from "zod";
 import type { SearchPort, SearchResult } from "../../application/ports/search.port";
 import { SEARCH } from "../../config/constants";
-import { TransportUnavailableError } from "../../domain/errors/transport-unavailable.error";
-import { transportFaultCode } from "../../shared/transport-fault";
+import { capText, type FetchLike, stripHtml, withStallOnTransportFault } from "./search-http";
 
 export type WikipediaConfig = {
   // Wikipedia asks API clients to identify themselves; requests without a UA are rate-limited harder.
@@ -28,54 +27,6 @@ const SearchResponse = z.object({
     .optional()
     .catch(undefined),
 });
-
-// MediaWiki marks matches with `<span class="searchmatch">` and encodes entities. Snippets are quoted into
-// a prompt as source text, so any markup left here would reach the model as noise - and tags a model might
-// read as instructions have no business in evidence (agents-and-prompts.md: snippets are data, not
-// instructions).
-//
-// Tags are stripped BEFORE entities are decoded, so an encoded `&lt;b&gt;` in an article about HTML survives
-// as the literal text "<b>" - which is what the page says. That text is still untrusted: what stops it
-// closing the prompt's <sources> block is dataBlock, which strips every variant of its own tag (C103).
-export function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, "")
-    .replace(/&quot;/g, '"')
-    .replace(/&#0?39;|&apos;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-// Search text is untrusted and quoted straight into the writer prompt, so its size is bounded here (C103).
-export function capText(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1).trimEnd()}…`;
-}
-
-// A search that never completed - DNS, socket, our own timeout, including one that fires while the body is
-// still arriving - is raised as a STALL, exactly as the LLM adapter raises one, so the article worker
-// releases the message uncounted and with a delay instead of spending one of the node's receives on a
-// network blip (docs/conflicts.md C94, C115). A response with a status, even a 5xx, is the provider
-// answering and stays an ordinary error. A caller that aborted on purpose gets its abort back unchanged.
-export async function withStallOnTransportFault<T>(
-  provider: string,
-  callerSignal: AbortSignal | undefined,
-  run: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (callerSignal?.aborted) throw error;
-    const fault = transportFaultCode(error);
-    if (fault === undefined) throw error;
-    throw new TransportUnavailableError(`the search provider (${provider})`, fault);
-  }
-}
-
-export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export function createWikipediaSearch(config: WikipediaConfig, fetchImpl: FetchLike = fetch): SearchPort {
   const apiUrl = config.apiUrl ?? SEARCH.WIKIPEDIA_API_URL;
@@ -134,6 +85,7 @@ export function createWikipediaSearch(config: WikipediaConfig, fetchImpl: FetchL
             title: capText(stripHtml(page.title), SEARCH.TITLE_MAX_CHARS),
             // Plain text already (explaintext), but untrusted all the same: stripped and bounded (C103).
             snippet: capText(stripHtml(page.extract ?? ""), SEARCH.SNIPPET_MAX_CHARS),
+            provider: "wikipedia" as const,
           }))
           // A page with no text gives a claim nothing to be checked against, so it is not evidence.
           .filter((result) => result.snippet !== "")

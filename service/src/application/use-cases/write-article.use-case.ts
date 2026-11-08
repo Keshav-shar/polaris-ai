@@ -7,7 +7,7 @@ import type { RetrievalAgent } from "../agents/retrieval.agent";
 import type { WriterAgent } from "../agents/writer.agent";
 import type { ArticleRepositoryPort } from "../ports/article-repository.port";
 import type { EvidenceRepositoryPort } from "../ports/evidence-repository.port";
-import type { NodeStatePort } from "../ports/node-state.port";
+import type { ArticleLease, NodeStatePort } from "../ports/node-state.port";
 import type { QuizStorePort } from "../ports/quiz-store.port";
 import type { TreeRepositoryPort } from "../ports/tree-repository.port";
 import type { FanIn } from "../tree/fan-in";
@@ -27,7 +27,8 @@ export type WriteArticleDeps = {
 };
 
 export type WriteArticle = {
-  execute(message: NodeMessage): Promise<void>;
+  // `lease`: given by a consumer that may see a second copy of the message (SQS, A18); the local worker passes none.
+  execute(message: NodeMessage, lease?: ArticleLease): Promise<void>;
 };
 
 // One article message = one node's article and its questions. The second pass, and still a separate one -
@@ -51,10 +52,11 @@ export function createWriteArticle({
   logger,
 }: WriteArticleDeps): WriteArticle {
   return {
-    async execute(message) {
+    async execute(message, lease) {
       const { runId, nodeId, topic, ancestors } = message;
 
-      const claim = await nodeState.claimArticle(nodeId);
+      // Throws ArticleLeaseHeldError when another copy holds the claim: a stall for the consumer, not a failure.
+      const claim = await nodeState.claimArticle(nodeId, lease);
       // Rule 1: this node's article is already finished, so a duplicate delivery does nothing.
       if (claim.articleStatus === "done" || claim.articleStatus === "failed") return;
 
@@ -99,20 +101,22 @@ export function createWriteArticle({
           // Only the credible subset reaches the writer, so an unverified article is one written from thin
           // evidence rather than from bad evidence.
           evidence: assessment.credible,
+          // The build owner's profile, carried on the message from kickoff (C139). Pitch and style only.
+          ...(message.learner === undefined ? {} : { learner: message.learner }),
         });
-        // The writer's draft passes the article guard before it is stored: a citation whose claim its source
-        // does not support is dropped (C124), a quiz with a sanity problem is dropped (C125). The article
-        // text is never touched.
+        // The writer's draft passes the article guard before it is stored: a citation to a url that is not one
+        // of this node's sources is dropped, and a quiz with a sanity problem is dropped (C125). No source text
+        // is re-read to second-guess a claim: since C147 the one multi-source search is the check (C146). The
+        // article text is never touched.
         // A boosted message's call also jumps the LLM queue, not only the article queue (C128, C129).
         const written = await writer.write(context, { boosted: message.boost === true });
         const { draft: drafted, report } = guardrail.guardArticle(written, assessment.credible);
-        if (report.groundedness.ungrounded > 0) {
-          logger.warn("citations dropped: not supported by their source", {
+        if (report.foreignCitations > 0) {
+          logger.warn("citations dropped: url not among the node's sources", {
             nodeId,
             topic,
-            dropped: report.groundedness.ungrounded,
-            grounded: report.groundedness.grounded,
-            unjudged: report.groundedness.unjudged,
+            dropped: report.foreignCitations,
+            kept: drafted.citations.length,
           });
         }
         if (report.quizProblems.length > 0) {
@@ -130,9 +134,9 @@ export function createWriteArticle({
         // concurrent delivery that got there first wins and both agree on the article.
         // The verdict is computed HERE, from this attempt's own gate, and stored with the draft: a redelivery
         // reuses the draft without searching again, so it could not recompute it (C118).
-        // Verified = the gate passed AND at least one citation survived the groundedness check (C118, C124):
-        // an unjudged or dropped citation is not evidence that the article is sourced.
-        const credibilityVerified = assessment.verified && report.groundedness.grounded > 0;
+        // Verified = the gate passed AND the article cites at least one of its sources (C118, C147). An article
+        // that cites nothing is not sourced, however good the evidence it was shown.
+        const credibilityVerified = assessment.verified && drafted.citations.length > 0;
         const saved = await nodeState.saveArticle(nodeId, { ...drafted, credibilityVerified });
         article = saved.article;
         if (article === undefined) throw new Error(`saveArticle left node ${nodeId} without an article`);

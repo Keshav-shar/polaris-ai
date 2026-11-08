@@ -29,6 +29,9 @@ export type RotationPolicy = "exhaustion" | "throttle" | "round-robin";
 export type PoolMember = {
   llm: LlmPort;
   model: string;
+  // Which account key serves this member ("key1", "key2"), when the pool spans more than one. A label for logs
+  // and for grouping a rejected key's members; never the key itself.
+  account?: string;
   // This model's own requests/day, or undefined when the provider publishes no ceiling. Lets the pool
   // retire a member BEFORE it 429s, which is free: no token accounting, just a request count.
   dailyRequestBudget: number | undefined;
@@ -104,9 +107,14 @@ export function createModelPoolLlm({
   // Order-sensitive, not sorted: the order decides the lead, which decides the distribution of answers,
   // so two orderings genuinely produce different trees and must not share cached expansions. Computed
   // once, so it is stable for the process - the whole point of separating it from activeModel().
-  const namespace =
-    namespaceOverride ?? `pool:${sha256Hex(members.map((m) => m.model).join("\u0000")).slice(0, 16)}`;
+  // Distinct models only: a second account key serving the same models writes the same answers, so it must
+  // not cold-start the cache. For a one-key pool this is the member list unchanged.
+  const distinctModels = [...new Set(members.map((m) => m.model))];
+  const namespace = namespaceOverride ?? `pool:${sha256Hex(distinctModels.join("\u0000")).slice(0, 16)}`;
   const label = `${members[0].model} +${members.length - 1} more`;
+  // Log context for one member: the model, plus its account when the pool has more than one.
+  const who = (member: PoolMember): Record<string, string> =>
+    member.account === undefined ? { model: member.model } : { model: member.model, account: member.account };
 
   // Held for ONE attempt, never across a cooldown sleep (C130): a call waiting out a throttled member used to
   // keep its slot for the whole wait, so a cooling writer could hold back an expansion that had a free model.
@@ -122,9 +130,11 @@ export function createModelPoolLlm({
   function retire(state: MemberState, reason: string): void {
     if (state.retired) return;
     state.retired = true;
-    const left = states.filter((s) => !s.retired).map((s) => s.member.model);
+    const left = states
+      .filter((s) => !s.retired)
+      .map((s) => (s.member.account === undefined ? s.member.model : `${s.member.model}#${s.member.account}`));
     logger.warn("llm pool: member retired for this process", {
-      model: state.member.model,
+      ...who(state.member),
       reason,
       remaining: left,
     });
@@ -136,7 +146,7 @@ export function createModelPoolLlm({
     const until = now() + ms;
     if (until <= state.cooldownUntil) return;
     state.cooldownUntil = until;
-    logger.info("llm pool: member throttled, rotating", { model: state.member.model, waitMs: ms });
+    logger.info("llm pool: member throttled, rotating", { ...who(state.member), waitMs: ms });
   }
 
   function ready(state: MemberState): boolean {
@@ -149,7 +159,7 @@ export function createModelPoolLlm({
     const until = now() + ms;
     if (until <= state.cooldownUntil) return;
     state.cooldownUntil = until;
-    logger.debug("llm pool: member paced, rotating", { model: state.member.model, waitMs: ms });
+    logger.debug("llm pool: member paced, rotating", { ...who(state.member), waitMs: ms });
   }
 
   async function dispatch(messages: readonly ChatMessage[], options?: ChatOptions): Promise<string> {
@@ -220,8 +230,18 @@ export function createModelPoolLlm({
           retire(state, "model not available to this account");
           continue;
         }
-        // A bad key (401/403) or a malformed request fails identically on every member, so rotating
-        // would burn the whole pool to learn the same thing once per model.
+        // A rejected key (401/403) is about that ACCOUNT. With a second account still live, retire every
+        // member on the rejected one and carry on; with one account it fails every member identically.
+        if (classified.status === 401 || classified.status === 403) {
+          const account = state.member.account;
+          const others = states.some((s) => !s.retired && s.member.account !== account);
+          if (account !== undefined && others) {
+            for (const s of states) if (s.member.account === account) retire(s, `key rejected (${classified.status})`);
+            continue;
+          }
+        }
+        // A malformed request fails identically on every member, so rotating would burn the whole pool to
+        // learn the same thing once per model.
         if (classified.kind === "fatal") throw error;
         if (policy === "exhaustion" && classified.status === 429) {
           // Under this policy the member owns per-minute backoff (C50), so reaching here means it has

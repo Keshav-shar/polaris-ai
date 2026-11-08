@@ -70,7 +70,8 @@ export function createRetrievalAgent({
           url: result.url,
           title: result.title,
           snippet: result.snippet,
-          credibility: scoreSource(result.url),
+          credibility: scoreSource(result.url, result.provider),
+          provider: result.provider,
         };
         // Validated rather than trusted: a provider can return a URL that is not one, and a malformed
         // entry must be dropped here rather than reaching a citation.

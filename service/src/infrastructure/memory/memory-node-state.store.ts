@@ -1,4 +1,6 @@
 import type { ClaimRequest, NodeResult, NodeStatePort, TerminalStatus } from "../../application/ports/node-state.port";
+import { ARTICLE } from "../../config/constants";
+import { ArticleLeaseHeldError } from "../../domain/errors/article-lease-held.error";
 import type { ArticleDraft } from "../../domain/schemas/article.schema";
 import type { NodeState } from "../../domain/schemas/node-state.schema";
 import type { NodeMessage } from "../../domain/schemas/queue-message.schema";
@@ -56,7 +58,9 @@ export function createMemoryNodeStateStore(): NodeStatePort {
       // Rule 1: a finished node is returned untouched, so the caller returns without doing anything.
       if (TERMINAL.includes(existing.status)) return copy(existing);
       existing.attempts += 1;
-      existing.status = "in_progress";
+      // Never downgrade `expanded`: its result is stored and its children may already be completing against it.
+      // Moving it back to in_progress made the fan-in ignore them, so the node never completed (C144).
+      if (existing.status !== "expanded") existing.status = "in_progress";
       return copy(existing);
     },
 
@@ -106,14 +110,34 @@ export function createMemoryNodeStateStore(): NodeStatePort {
       return copy(parent);
     },
 
-    async claimArticle(nodeId) {
+    async claimArticle(nodeId, lease) {
       const state = items.get(nodeId);
       // An article message for a node that was never constructed is a broken enqueue, not a race.
       if (state === undefined) throw new Error(`claimArticle: node ${nodeId} does not exist`);
       // Rule 1 on the article axis: a finished article is returned untouched, so the caller returns.
       if (state.articleStatus !== undefined && TERMINAL.includes(state.articleStatus)) return copy(state);
+      if (lease !== undefined) {
+        // A18: a live lease held by ANOTHER delivery wins; the same claimant always gets its own claim back.
+        const held =
+          state.articleStatus === "in_progress" &&
+          state.claimedBy !== undefined &&
+          state.claimedBy !== lease.claimant &&
+          (state.claimedUntil ?? 0) > lease.nowMs;
+        if (held) throw new ArticleLeaseHeldError(nodeId, (state.claimedUntil ?? lease.nowMs) - lease.nowMs);
+        state.claimedBy = lease.claimant;
+        state.claimedUntil = lease.nowMs + ARTICLE.CLAIM_LEASE_MS;
+      }
       state.articleStatus = "in_progress";
       return copy(state);
+    },
+
+    async recordError(nodeId, reason) {
+      const state = items.get(nodeId);
+      if (state !== undefined) state.lastError = reason;
+    },
+
+    async lastError(nodeId) {
+      return items.get(nodeId)?.lastError;
     },
 
     async saveArticle(nodeId, article: ArticleDraft) {

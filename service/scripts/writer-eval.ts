@@ -1,11 +1,13 @@
 import "dotenv/config";
 import { readFileSync, writeFileSync } from "node:fs";
-import { assessGroundedness, checkCredibility, checkQuizSanity } from "../src/application/agents/guardrail.agent";
+import { checkCredibility, checkQuizSanity } from "../src/application/agents/guardrail.agent";
 import { createRetrievalAgent } from "../src/application/agents/retrieval.agent";
 import { buildWriterUserPrompt, WRITER_SYSTEM_PROMPT } from "../src/application/agents/writer.prompt";
 import { createStructuredGenerator } from "../src/application/llm/structured";
 import type { LlmCallEvent, ReasoningEffort } from "../src/application/ports/llm.port";
 import { createSearchFromEnv } from "../src/composition/search";
+import { createLogger } from "../src/shared/logger";
+import { assessGroundedness } from "./groundedness-metric";
 import { type Env, getEnv, isLlmConfigured, requireLlmEnv } from "../src/config/env";
 import { QuotaExhaustedError } from "../src/domain/errors/quota-exhausted.error";
 import { ArticleContext, WriterOutput } from "../src/domain/schemas/article.schema";
@@ -111,7 +113,7 @@ async function collect(env: Env): Promise<Saved> {
   const repeat = Number(arg("repeat") ?? "2");
 
   // ONE retrieval per context, shared by every arm: the comparison is paired.
-  const retrieval = createRetrievalAgent({ search: createSearchFromEnv(env) });
+  const retrieval = createRetrievalAgent({ search: createSearchFromEnv(env, createLogger()) });
   const evidence: Record<string, EvidenceItem[]> = {};
   for (const spec of CONTEXTS) {
     const { items } = await retrieval.retrieve({ topic: spec.topic, parentTopic: spec.parent.topic });

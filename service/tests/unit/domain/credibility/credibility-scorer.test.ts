@@ -57,6 +57,30 @@ describe("scoreSource", () => {
   it("ignores www. and letter case", () => {
     expect(scoreSource("https://WWW.Britannica.COM/x")).toBe(scoreSource("https://britannica.com/x"));
   });
+
+  // C146 REGRESSION: the new tiers, and a DOI link scored by the provider that found it.
+  it("scores Reuters and AP above the gate but below an encyclopedia", () => {
+    for (const url of ["https://www.reuters.com/world/x", "https://apnews.com/article/y"]) {
+      expect(scoreSource(url)).toBeGreaterThanOrEqual(CREDIBILITY.MIN_SCORE);
+      expect(scoreSource(url)).toBeLessThan(scoreSource("https://en.wikipedia.org/x"));
+    }
+  });
+
+  it("scores a DOI by its provider: the presses and IEEE as academic, OpenAlex just below, others as unknown", () => {
+    const doi = "https://doi.org/10.1017/abc";
+    expect(scoreSource(doi, "crossref")).toBe(scoreSource("https://mit.edu/x"));
+    expect(scoreSource(doi, "ieee")).toBe(scoreSource("https://mit.edu/x"));
+    expect(scoreSource(doi, "openalex")).toBeGreaterThanOrEqual(CREDIBILITY.MIN_SCORE);
+    expect(scoreSource(doi, "openalex")).toBeLessThan(scoreSource(doi, "crossref"));
+    expect(scoreSource(doi, "openalex")).toBeGreaterThan(scoreSource("https://en.wikipedia.org/x"));
+    expect(scoreSource(doi)).toBe(scoreSource("https://some-random-blog.example/x"));
+    expect(scoreSource(doi, "tavily")).toBe(scoreSource(doi));
+  });
+
+  it("never lets a provider lift a non-DOI url: the URL rules still decide it", () => {
+    expect(scoreSource("https://reddit.com/r/x", "openalex")).toBe(scoreSource("https://reddit.com/r/x"));
+    expect(scoreSource("not a url", "crossref")).toBe(0);
+  });
 });
 
 describe("sourceIdentity", () => {

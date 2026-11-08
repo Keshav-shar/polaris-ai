@@ -20,3 +20,8 @@
 
 **Design notes:**
 - Scripts that call a real LLM, Supabase or AWS need `service/.env` filled in by the user; they print pass/fail and never print secrets.
+
+**Phase 13:** `build-lambdas.ts` (`npm run build:lambdas`) + `zip-writer.ts` (stdlib ZIP); `local-aws.ts` (emulator
+endpoints, resource names, `ensureLocalAws`, the poller's SQS); `create-local-aws.ts` (`npm run aws:local`);
+`sqs-poller.ts` (`npm run worker:poll`, the local worker); `smoke-aws-local.ts` (`npm run smoke:aws-local`: the
+single-process build + forced dead-letter check).

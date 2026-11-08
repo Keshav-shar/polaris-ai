@@ -51,9 +51,9 @@ Why: the construction and article passes must be testable with fake agents and z
 
 ## Known plan defects — do not reproduce them
 
-1. ltree labels allow only `[A-Za-z0-9_-]` up to 1000 chars; build paths from ids, not titles. (`db/migrations`, `domain/entities`)
-2. Keep a durable `runs` record; do not rely on an expiring store for run status. (`db/migrations`, `application/use-cases`)
-3. Create FK targets before the tables that reference them (`runs` before `nodes`). (`db/migrations`)
+1. ltree labels allow only `[A-Za-z0-9_-]` up to 1000 chars; build paths from ids, not titles. (`supabase/migrations`, `domain/entities`)
+2. Keep a durable `runs` record; do not rely on an expiring store for run status. (`supabase/migrations`, `application/use-cases`)
+3. Create FK targets before the tables that reference them (`runs` before `nodes`). (`supabase/migrations`)
 4. The embedding dimension is defined once (`EMBEDDING_DIMENSION`); never hard-code `vector(1536)`. (`config`, `infrastructure/llm`)
 5. Supabase free tier: 500 MB, no backups, pauses after 7 days idle. (`infrastructure/postgres`)
 6. AWS: zip bundles, not container images (ECR is not Always Free); accounts created after 2025-07-15 use a credit-based Free Plan, so confirm each service. (`interfaces/workers`, `scripts`)

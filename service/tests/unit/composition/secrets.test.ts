@@ -10,11 +10,18 @@ describe("secretValues", () => {
     const env = parseEnv({
       LLM_API_KEY: "llm-secret-123",
       TAVILY_API_KEY: "tvly-secret-456",
+      SUPABASE_URL: "https://example.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "sb-secret-789",
       AWS_SECRET_ACCESS_KEY: "aws-secret-000",
     });
     expect(secretValues(env).sort()).toEqual(
       ["aws-secret-000", "llm-secret-123", "sb-secret-789", "tvly-secret-456"].sort(),
+    );
+  });
+
+  it("redacts the second LLM account key as well", () => {
+    expect(secretValues(parseEnv({ LLM_API_KEY: "k1-secret", LLM_API_KEY_NEXT: "k2-secret" }))).toEqual(
+      expect.arrayContaining(["k1-secret", "k2-secret"]),
     );
   });
 

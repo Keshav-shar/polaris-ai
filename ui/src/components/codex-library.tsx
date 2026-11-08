@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { getRuns, getTree } from "../lib/api-client";
 import { flattenTree } from "../lib/constellation-layout";
 import type { RunStatus, RunSummary, TreeNode } from "../lib/contract";
-import { friendlyError } from "../lib/friendly-error";
+import { friendlyError, needsSignIn } from "../lib/friendly-error";
+import { useSession } from "../lib/use-session";
 import { EmptyState } from "./empty-state";
 import { ScrollBranch } from "./scroll-branch";
 
@@ -14,7 +15,10 @@ type Codex = { run: RunSummary; root: TreeNode; scrolls: TreeNode[] };
 type State =
   | { kind: "loading" }
   | { kind: "ready"; codices: Codex[] }
+  | { kind: "sign-in" }
   | { kind: "error"; message: string };
+
+type Scope = "mine" | "public";
 
 const FIELD =
   "w-full rounded-xl border border-line bg-white px-4 py-2.5 text-xs text-ink-soft placeholder-faint shadow-inner focus:outline-none focus:ring-1 focus:ring-gold";
@@ -39,13 +43,20 @@ export function CodexLibrary() {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [query, setQuery] = useState("");
   const [openRuns, setOpenRuns] = useState<ReadonlySet<string>>(new Set());
+  // "Explore" = maps other learners shared with everyone. Only offered when there are accounts at all.
+  const [scope, setScope] = useState<Scope>("mine");
+  const session = useSession();
+  // Reloads when the learner signs in or out, so the library is never someone else's.
+  const sessionKey = session.status === "signed-in" ? session.userId : session.status;
 
   useEffect(() => {
+    if (sessionKey === "loading") return;
     const controller = new AbortController();
+    setState({ kind: "loading" });
 
     const load = async (): Promise<void> => {
       try {
-        const { runs } = await getRuns(controller.signal);
+        const { runs } = await getRuns(scope, controller.signal);
         const trees = await Promise.all(
           runs.map(async (run) => {
             try {
@@ -68,13 +79,17 @@ export function CodexLibrary() {
         }
       } catch (error) {
         if (controller.signal.aborted) return;
+        if (needsSignIn(error)) {
+          setState({ kind: "sign-in" });
+          return;
+        }
         setState({ kind: "error", message: friendlyError(error, "We couldn't load your library. Please try again.") });
       }
     };
 
     void load();
     return () => controller.abort();
-  }, []);
+  }, [scope, sessionKey]);
 
   const codices = state.kind === "ready" ? state.codices : [];
   const needle = query.trim().toLowerCase();
@@ -95,6 +110,39 @@ export function CodexLibrary() {
     });
   };
 
+  const tabs =
+    session.status === "disabled" ? null : (
+      <div role="tablist" aria-label="Which maps" className="flex gap-2">
+        {(
+          [
+            ["mine", "My maps"],
+            ["public", "Explore"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={scope === value}
+            onClick={() => setScope(value)}
+            className={`rounded-full border px-4 py-1.5 text-xs font-semibold uppercase tracking-widest transition-colors ${
+              scope === value ? "border-ink bg-ink text-parchment" : "border-line bg-white text-ink hover:border-gold"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    );
+
+  return (
+    <div className="space-y-5">
+      {tabs}
+      {renderBody()}
+    </div>
+  );
+
+  function renderBody() {
   if (state.kind === "loading") {
     return (
       <p role="status" className="py-16 text-center font-serif text-lg text-gold-ink">
@@ -103,10 +151,36 @@ export function CodexLibrary() {
     );
   }
 
+  if (state.kind === "sign-in") {
+    return (
+      <EmptyState
+        title="Sign in to see your library"
+        action={
+          <Link
+            href="/sign-in?next=/codex"
+            className="inline-flex rounded-xl bg-ink px-6 py-3 text-xs font-semibold uppercase tracking-widest text-parchment transition-colors hover:bg-gold-ink"
+          >
+            Sign in
+          </Link>
+        }
+      >
+        <p>Your maps are saved to your account. You can still explore maps other learners have shared.</p>
+      </EmptyState>
+    );
+  }
+
   if (state.kind === "error") {
     return (
       <EmptyState title="Your library didn't load">
         <p>{state.message}</p>
+      </EmptyState>
+    );
+  }
+
+  if (codices.length === 0 && scope === "public") {
+    return (
+      <EmptyState title="Nothing shared yet">
+        <p>When learners share a map with everyone, it shows up here.</p>
       </EmptyState>
     );
   }
@@ -207,4 +281,5 @@ export function CodexLibrary() {
       )}
     </div>
   );
+}
 }

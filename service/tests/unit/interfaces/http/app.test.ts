@@ -35,6 +35,8 @@ describe("GET /health", () => {
       service: "polaris-service",
       version: "9.9.9",
       llmConfigured: false,
+      // Defaults to false: an app built with no auth wiring must not claim sign-in is needed.
+      authRequired: false,
     });
   });
 });

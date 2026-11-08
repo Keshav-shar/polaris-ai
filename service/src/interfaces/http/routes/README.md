@@ -19,3 +19,10 @@
 - Deps are **accessor functions**, not use-case instances: `composition/container.ts` builds the stack on first use, so an unconfigured LLM surfaces as a 503 per request instead of a dead process, and `startTreeBuild()` also restarts a halted worker (docs/conflicts.md C64, C55).
 - Express 5 forwards a rejected handler promise to the error middleware, so handlers need no try/catch.
 - 202, never 201: the tree does not exist when the response is sent.
+
+**Phase 12:** every handler passes `readCaller(res)` to its use-case. `PATCH /api/trees/:runId { visibility }` (owner
+only) is new; `GET /api/runs` reads `scope`. Each handler states its auth and limits in a comment.
+
+**Phase C (C106, C138):** `nodes.routes.ts` adds `POST /:nodeId/quiz-attempts` (strict `QuizAttemptBody`, anyone who
+may read the node), `PUT /:nodeId/progress` and `PUT /:nodeId/feedback` (signed in; strict bodies, so free text is a
+400). Auth and rate limit are stated above each handler; none makes an LLM call.

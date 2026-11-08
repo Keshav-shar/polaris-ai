@@ -14,19 +14,37 @@
     "consistency": "tsx scripts/consistency-check.ts",
     "model-eval": "tsx scripts/model-eval.ts",
     "writer-eval": "tsx scripts/writer-eval.ts",
-    "docs:check": "tsx scripts/docs-check.ts"
+    "docs:check": "tsx scripts/docs-check.ts",
+    "test:integration": "vitest run tests/integration",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:push": "supabase db push",
+    "build:lambdas": "tsx scripts/build-lambdas.ts",
+    "aws:local": "tsx scripts/create-local-aws.ts",
+    "smoke:aws-local": "tsx scripts/smoke-aws-local.ts",
+    "worker:poll": "tsx scripts/sqs-poller.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1164.0",
+    "@aws-sdk/client-sqs": "^3.1164.0",
+    "@aws-sdk/client-ssm": "^3.1164.0",
+    "@aws-sdk/lib-dynamodb": "^3.1164.0",
+    "@supabase/supabase-js": "^2.118.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.0",
     "express": "^5.2.1",
+    "jose": "^6.2.14",
     "openai": "^7.19.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@types/aws-lambda": "^8.10.164",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.3",
+    "esbuild": "^0.28.2",
+    "supabase": "^2.122.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"

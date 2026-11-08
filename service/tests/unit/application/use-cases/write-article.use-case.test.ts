@@ -346,16 +346,27 @@ describe("write-article use-case", () => {
     });
   });
 
-  // C124: a citation whose claim its source does not support is dropped, and with no grounded citation left
-  // the article is not verified - though it is still stored.
-  it("drops an ungrounded citation and marks the article unverified when none is grounded", async () => {
+  // C147 REGRESSION: no lexical re-check on the write path. A claim its source does not literally say is kept,
+  // and the article is verified on the gate + "cites one of its sources" alone.
+  it("keeps a citation without re-checking its claim against the source, and stores the article verified", async () => {
+    const claim = "Photosynthesis was discovered by Jan Ingenhousz in 1779.";
     const h = await constructed();
-    const f = fakes({ output: { citations: [{ url: SOURCE_URL, claim: "Photosynthesis was discovered by Jan Ingenhousz in 1779." }] } });
+    const f = fakes({ output: { citations: [{ url: SOURCE_URL, claim }] } });
+    const { useCase, articleRepo, warnings } = writeArticleFor(h, f);
+    const [message] = await h.articleQueue.receive(1);
+    await useCase.execute(message!.message);
+    expect(await articleRepo.get(root.nodeId)).toMatchObject({ citations: [{ url: SOURCE_URL, claim }], credibilityVerified: true });
+    expect(warnings).not.toContain("citations dropped: url not among the node's sources");
+  });
+
+  it("drops a citation to an invented url and marks the article unverified when none of its sources is cited", async () => {
+    const h = await constructed();
+    const f = fakes({ output: { citations: [{ url: "https://invented.example/p", claim: "Plants make sugar from light." }] } });
     const { useCase, articleRepo, warnings } = writeArticleFor(h, f);
     const [message] = await h.articleQueue.receive(1);
     await useCase.execute(message!.message);
     expect(await articleRepo.get(root.nodeId)).toMatchObject({ citations: [], credibilityVerified: false });
-    expect(warnings).toContain("citations dropped: not supported by their source");
+    expect(warnings).toContain("citations dropped: url not among the node's sources");
   });
 
   // C125: a quiz a learner would find broken never reaches storage, and costs no extra call.

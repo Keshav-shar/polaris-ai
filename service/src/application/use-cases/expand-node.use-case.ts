@@ -125,7 +125,15 @@ export function createExpandNode({
             topic: message.topic,
             brief: message.brief,
             request: message.request,
-            context: { depth, maxDepth, position, ancestors },
+            // The learner's profile shapes the ROOT only (C139): it decides how the tree is pitched, and every
+            // interior call then follows that plan. Keeping it off interior calls keeps their cache shared.
+            context: {
+              depth,
+              maxDepth,
+              position,
+              ancestors,
+              ...(message.request !== undefined && message.learner !== undefined ? { learner: message.learner } : {}),
+            },
             seedKey: nodeId,
           });
           const brief = output.brief ?? message.brief;

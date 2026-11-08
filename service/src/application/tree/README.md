@@ -27,3 +27,10 @@
 **Design notes:**
 - There is no level-synchronous builder any more: fan-out is one queue message per child and fan-in is these counters (`docs/conflicts.md` C39).
 - Dependencies are injected so everything is tested with in-memory adapters and no network.
+
+**Phase C:** `readable-node.ts` (the one node read rule, 404 for someone else's private run), `run-finished.ts`
+(queues a learner-insight refresh when an owned run reaches `done`/`halted`; never throws). `fan-in` takes
+`onRunFinished`; `messages.ts` copies `learner` onto every child message; `expansion-cache.ts` appends
+`learnerFingerprint` to a root key shaped by a profile (C139).
+`optional-read.ts` (C143): `optionalRead(promise, logger, what)` for a read that only ENRICHES a response (the
+reader's own progress/feedback) - a failure is logged and dropped, never thrown.

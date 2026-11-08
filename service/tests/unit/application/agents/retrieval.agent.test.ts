@@ -14,7 +14,12 @@ function fakeSearch(results: SearchResult[]) {
   return { search, queries };
 }
 
-const hit = (url: string, title = "t", snippet = "s"): SearchResult => ({ url, title, snippet });
+const hit = (url: string, title = "t", snippet = "s", provider: SearchResult["provider"] = "wikipedia"): SearchResult => ({
+  url,
+  title,
+  snippet,
+  provider,
+});
 
 describe("buildSearchQuery", () => {
   it("adds the parent topic, which is what makes a bare subtopic searchable", () => {
@@ -33,6 +38,13 @@ describe("buildSearchQuery", () => {
 });
 
 describe("createRetrievalAgent", () => {
+  it("carries each result's provider onto its evidence and scores a DOI by that provider (C146)", async () => {
+    const { search } = fakeSearch([hit("https://doi.org/10.1017/x", "t", "s", "crossref"), hit("https://w.example/1")]);
+    const { items } = await createRetrievalAgent({ search }).retrieve({ topic: "T", parentTopic: null });
+    expect(items[0]).toMatchObject({ url: "https://doi.org/10.1017/x", provider: "crossref", credibility: 0.9 });
+    expect(items[1]).toMatchObject({ provider: "wikipedia" });
+  });
+
   it("scores each result with the pure domain rule", async () => {
     const { search } = fakeSearch([hit("https://www.nih.gov/a"), hit("https://reddit.com/b")]);
     const { items: evidence } = await createRetrievalAgent({ search }).retrieve({ topic: "T", parentTopic: null });

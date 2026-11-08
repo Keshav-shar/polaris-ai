@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ANCESTOR_WINDOW, MAX_DEPTH_CEILING } from "../../config/constants";
 import { TreeRequestBody } from "./api.schema";
+import { LearnerProfile } from "./insight.schema";
 import { AncestorRef, Brief } from "./node.schema";
 
 // One message = one unit of work on either queue (construct or article), including their DLQs.
@@ -23,5 +24,8 @@ export const NodeMessage = z.object({
   // A learner asked for this node's scroll (POST /api/nodes/:id/boost). Decides ORDER only - where the message
   // waits and where its LLM call waits - never what the handler does with it (C128).
   boost: z.literal(true).optional(),
+  // The owner's learner profile at kickoff (C139), copied onto every message of the build so neither pass reads
+  // it again. Read by the ROOT expansion and by every writer call; interior expansions ignore it.
+  learner: LearnerProfile.optional(),
 });
 export type NodeMessage = z.infer<typeof NodeMessage>;

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { AccountButton } from "./account-button";
 
 // Real routes rather than tab state, so a lesson or a map can be linked to and reloaded. The mock has three
 // links; the third ("My progress") arrives with the feedback feature and is not shown before its page exists,
@@ -35,6 +36,7 @@ export function SiteHeader() {
           </span>
         </Link>
 
+        <div className="flex flex-col items-center gap-4 sm:flex-row sm:gap-8">
         <nav aria-label="Primary" className="flex items-center gap-8 text-xs font-semibold uppercase tracking-widest">
           {TABS.map((tab) => {
             const active = isActive(pathname, tab.href) || (inLibrary && tab.href === "/codex");
@@ -52,6 +54,8 @@ export function SiteHeader() {
             );
           })}
         </nav>
+        <AccountButton />
+        </div>
       </div>
     </header>
   );

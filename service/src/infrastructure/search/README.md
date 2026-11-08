@@ -14,8 +14,14 @@
   so its tests need no network. A body it cannot parse is an EMPTY result set, not a throw: a node
   with no sources still gets an unverified article rather than failing the run
 - `tavily.adapter.ts` — built (Phase 9). Bearer auth on the same port, opt-in via
-  `SEARCH_PROVIDER=tavily`; the key is never echoed in an error message
-- Both wrap the whole fetch + body read in `withStallOnTransportFault` (in `wikipedia.adapter.ts`): a search
+  `SEARCH_PROVIDERS=...,tavily`; the key is never echoed in an error message
+- Phase R (C146): `search-http.ts` (the shared helpers below + `getJson` / `ProviderHttpError`),
+  `crossref.adapter.ts` (Cambridge 56, Oxford 286, IEEE 263; abstracts only; JATS stripped),
+  `openalex.adapter.ts` (Google Scholar stand-in; key; inverted-index abstracts), `ieee-xplore.adapter.ts` (key;
+  per-UTC-day quota circuit), `gdelt.adapter.ts` (Reuters / AP headlines; sanitized query; `interval-gate.ts`
+  spaces calls 5 s apart), `multi-source-search.adapter.ts` (all providers in parallel, failures logged and
+  skipped, breadth-first merge capped per provider, DOI de-dup). Every result carries its `provider`
+- All wrap the whole fetch + body read in `withStallOnTransportFault` (in `search-http.ts`): a search
   that never completed - DNS, socket, our own timeout - raises `TransportUnavailableError`, which the article
   worker releases uncounted with a delay; an HTTP status stays an ordinary error (Phase 10.7, C115). Title and
   snippet are bounded by `capText` (C103)

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_CONCURRENT_RUNS, MAX_NODES_PER_RUN, REASONING_EFFORTS, WORKER } from "./constants";
+import { MAX_CONCURRENT_RUNS, MAX_NODES_PER_RUN, REASONING_EFFORTS, USER_LIMITS, WORKER } from "./constants";
 
 export class EnvError extends Error {
   override readonly name = "EnvError";
@@ -9,6 +9,19 @@ export class EnvError extends Error {
 const optionalString = z.preprocess((v) => (v === "" ? undefined : v), z.string().optional());
 const optionalUrl = z.preprocess((v) => (v === "" ? undefined : v), z.url().optional());
 const optionalCount = z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().min(1).optional());
+
+// The article pass's search providers (C146). Keyless by default; openalex, ieee and tavily need their key.
+export const SEARCH_PROVIDER_NAMES = ["wikipedia", "crossref", "gdelt", "openalex", "ieee", "tavily"] as const;
+export type SearchProviderName = (typeof SEARCH_PROVIDER_NAMES)[number];
+const DEFAULT_SEARCH_PROVIDERS = "wikipedia,crossref,gdelt";
+// A comma list, trimmed, de-duplicated, order kept (order is the round-robin order within a rank).
+const searchProviderList = z.preprocess(
+  (v) => (v === undefined || v === "" ? DEFAULT_SEARCH_PROVIDERS : v),
+  z
+    .string()
+    .transform((v) => [...new Set(v.split(",").map((name) => name.trim().toLowerCase()).filter((name) => name !== ""))])
+    .pipe(z.array(z.enum(SEARCH_PROVIDER_NAMES)).min(1)),
+);
 
 function withDefault<T extends z.ZodType>(schema: T, fallback: z.input<T>) {
   return z.preprocess((v) => (v === "" || v === undefined ? fallback : v), schema);
@@ -25,6 +38,11 @@ const EnvSchema = z
     // Groq account. The only switching left is between that account's MODELS, which the pool below does.
     LLM_BASE_URL: optionalUrl,
     LLM_API_KEY: optionalString,
+    // A key for a SECOND Groq account (organization). Groq limits each (organization, model), so every model
+    // in both pools is offered once per key and the round-robin spreads calls across both accounts, doubling
+    // real capacity. Same base URL, same models. Unset = one account, exactly as before. A second key from the
+    // SAME organization adds nothing: it draws on the same buckets.
+    LLM_API_KEY_NEXT: optionalString,
     LLM_MODEL: optionalString,
     // Extra rotation members, AFTER the LLM_MODEL lead. Comma-separated, order = rotation order. Each
     // entry may carry that model's own requests/day as `id=rpd`, which lets the pool retire a member
@@ -80,26 +98,78 @@ const EnvSchema = z
     // the provider's per-minute limit; raise it only with a provider whose RPM genuinely allows it (C61).
     MAX_CONCURRENT_RUNS: withDefault(z.coerce.number().int().min(1), String(MAX_CONCURRENT_RUNS)),
 
-    SEARCH_PROVIDER: withDefault(z.enum(["wikipedia", "tavily"]), "wikipedia"),
+    // Comma list, default wikipedia,crossref,gdelt (C146). Replaces the single SEARCH_PROVIDER.
+    SEARCH_PROVIDERS: searchProviderList,
+    // Read only to catch a pre-C146 config that chose Tavily and would otherwise silently lose it.
+    SEARCH_PROVIDER: optionalString,
     TAVILY_API_KEY: optionalString,
+    OPENALEX_API_KEY: optionalString,
+    IEEE_API_KEY: optionalString,
     SEARCH_USER_AGENT: optionalString,
+    // Crossref's polite pool and OpenAlex both ask for a contact address. Optional; never sent anywhere else.
+    SEARCH_CONTACT_EMAIL: optionalString,
 
+    // Both or neither (C137). Set = Postgres is the permanent store AND sign-in is required to build; unset =
+    // in-memory stores and no auth, exactly as before Phase 12. Never in ui/: the key bypasses RLS.
     SUPABASE_URL: optionalUrl,
     SUPABASE_SERVICE_ROLE_KEY: optionalString,
+    // Per-user cost guards, checked before any work (C105). Arithmetic in config/constants.ts USER_LIMITS.
+    MAX_RUNS_PER_USER_PER_DAY: withDefault(
+      z.coerce.number().int().min(1),
+      String(USER_LIMITS.MAX_RUNS_PER_USER_PER_DAY),
+    ),
+    MAX_STORED_RUNS_PER_USER: withDefault(
+      z.coerce.number().int().min(1),
+      String(USER_LIMITS.MAX_STORED_RUNS_PER_USER),
+    ),
 
     AWS_REGION: optionalString,
     AWS_ACCESS_KEY_ID: optionalString,
     AWS_SECRET_ACCESS_KEY: optionalString,
     NODE_EXPAND_QUEUE_URL: optionalUrl,
     ARTICLE_WRITE_QUEUE_URL: optionalUrl,
+    // Phase 13 (A21, A24): the boost queue the article Lambda also consumes, and the learner-insight queue. Both
+    // optional: without the first a boost only marks the node; without the second insights are not refreshed.
+    ARTICLE_PRIORITY_QUEUE_URL: optionalUrl,
+    INSIGHT_QUEUE_URL: optionalUrl,
     NODES_TABLE_NAME: optionalString,
+    // Local parity (C109) needs no variable here: the AWS SDK itself reads AWS_ENDPOINT_URL_SQS and
+    // AWS_ENDPOINT_URL_DYNAMODB (ElasticMQ and DynamoDB Local listen on different ports). Unset on AWS.
+    // Lambdas only: SSM Parameter Store path whose SecureStrings are merged into the env at cold start (C108).
+    SSM_PARAMETER_PREFIX: optionalString,
   })
   .superRefine((env, ctx) => {
-    if (env.SEARCH_PROVIDER === "tavily" && !env.TAVILY_API_KEY) {
+    // Half a Supabase config would silently fall back to memory stores and no auth: refused instead.
+    if ((env.SUPABASE_URL === undefined) !== (env.SUPABASE_SERVICE_ROLE_KEY === undefined)) {
       ctx.addIssue({
         code: "custom",
-        path: ["TAVILY_API_KEY"],
-        message: "is required when SEARCH_PROVIDER=tavily",
+        path: [env.SUPABASE_URL === undefined ? "SUPABASE_URL" : "SUPABASE_SERVICE_ROLE_KEY"],
+        message: "set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY together, or neither",
+      });
+    }
+    // The SQS build path needs its queues, its table and a region, or every request would fail deep in the SDK.
+    if (env.QUEUE_MODE === "sqs") {
+      for (const name of ["AWS_REGION", "NODE_EXPAND_QUEUE_URL", "ARTICLE_WRITE_QUEUE_URL", "NODES_TABLE_NAME"] as const) {
+        if (env[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when QUEUE_MODE=sqs" });
+      }
+    }
+    const keys = { tavily: env.TAVILY_API_KEY, openalex: env.OPENALEX_API_KEY, ieee: env.IEEE_API_KEY } as const;
+    for (const [provider, key] of Object.entries(keys)) {
+      if (env.SEARCH_PROVIDERS.includes(provider as SearchProviderName) && !key) {
+        ctx.addIssue({
+          code: "custom",
+          path: [`${provider.toUpperCase()}_API_KEY`],
+          message: `is required when SEARCH_PROVIDERS includes ${provider}`,
+        });
+      }
+    }
+    // SEARCH_PROVIDER=wikipedia is harmless to leave behind (Wikipedia is in the default list); a leftover
+    // SEARCH_PROVIDER=tavily would silently stop searching Tavily, so it is refused with the rename.
+    if (env.SEARCH_PROVIDER === "tavily" && !env.SEARCH_PROVIDERS.includes("tavily")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SEARCH_PROVIDER"],
+        message: "was renamed SEARCH_PROVIDERS (a comma list); add tavily to it",
       });
     }
   });
@@ -120,7 +190,10 @@ export type PoolModel = {
 
 export type LlmEnv = {
   baseUrl: string;
+  // The FIRST key, kept as its own field for the eval/smoke scripts that build one adapter directly.
   apiKey: string;
+  // Every account key, in order: [LLM_API_KEY, LLM_API_KEY_NEXT?]. Each is a separate set of rate limits.
+  apiKeys: readonly [string, ...string[]];
   // The LEAD model, always `models[0].id`. Kept as its own field so every existing reader (smoke scripts,
   // the selected-model log line, env tests) still sees the configured lead.
   model: string;
@@ -130,8 +203,8 @@ export type LlmEnv = {
   // the lead: its whole purpose is to leave out models that can expand but cannot write (C92).
   writerModels: readonly [PoolModel, ...PoolModel[]] | undefined;
   rotation: RotationPolicy;
-  // The run's requests/day: the SUM over every member, or undefined when ANY member's ceiling is
-  // unknown - half a budget is a worse warning than none.
+  // The run's requests/day: the SUM over every member on every key, or undefined when ANY member's
+  // ceiling is unknown - half a budget is a worse warning than none.
   dailyRequestBudget: number | undefined;
   jsonMode: boolean;
   maxConcurrency: number;
@@ -223,6 +296,41 @@ function parsePoolModels(raw: string | undefined, varName: string): PoolModel[] 
     });
 }
 
+export type SupabaseEnv = { url: string; serviceRoleKey: string };
+
+// The Supabase project, when one is configured (parseEnv already refused half a pair).
+export function supabaseEnv(env: Env): SupabaseEnv | undefined {
+  if (env.SUPABASE_URL === undefined || env.SUPABASE_SERVICE_ROLE_KEY === undefined) return undefined;
+  return { url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY };
+}
+
+export type AwsEnv = {
+  region: string;
+  tableName: string;
+  expandQueueUrl: string;
+  articleQueueUrl: string;
+  articlePriorityQueueUrl: string | undefined;
+  insightQueueUrl: string | undefined;
+};
+
+// The SQS build path's config (QUEUE_MODE=sqs). parseEnv already refused a partial one; this narrows the types.
+export function awsEnv(env: Env): AwsEnv {
+  const { AWS_REGION, NODES_TABLE_NAME, NODE_EXPAND_QUEUE_URL, ARTICLE_WRITE_QUEUE_URL } = env;
+  if (!AWS_REGION || !NODES_TABLE_NAME || !NODE_EXPAND_QUEUE_URL || !ARTICLE_WRITE_QUEUE_URL) {
+    throw new EnvError(
+      "QUEUE_MODE=sqs needs AWS_REGION, NODES_TABLE_NAME, NODE_EXPAND_QUEUE_URL and ARTICLE_WRITE_QUEUE_URL (docs/setup.md).",
+    );
+  }
+  return {
+    region: AWS_REGION,
+    tableName: NODES_TABLE_NAME,
+    expandQueueUrl: NODE_EXPAND_QUEUE_URL,
+    articleQueueUrl: ARTICLE_WRITE_QUEUE_URL,
+    articlePriorityQueueUrl: env.ARTICLE_PRIORITY_QUEUE_URL,
+    insightQueueUrl: env.INSIGHT_QUEUE_URL,
+  };
+}
+
 export function isLlmConfigured(env: Env): boolean {
   return Boolean(env.LLM_BASE_URL && env.LLM_API_KEY && env.LLM_MODEL);
 }
@@ -257,10 +365,15 @@ export function requireLlmEnv(env: Env): LlmEnv {
     (m) => !seen.has(m.id) && seen.add(m.id),
   );
   const models: [PoolModel, ...PoolModel[]] = [lead, ...extras];
+  // A repeat of the first key is ignored rather than counted twice: it would double the budget below and
+  // the pacing in composition for buckets that do not exist.
+  const next = env.LLM_API_KEY_NEXT;
+  const apiKeys: [string, ...string[]] = next !== undefined && next !== apiKey ? [apiKey, next] : [apiKey];
   // undefined if ANY member's ceiling is unknown: warning against a partial budget is worse than none.
+  // Each key is its own organization, so each has the full per-model allowance.
   const poolBudget = models.some((m) => m.dailyRequestBudget === undefined)
     ? undefined
-    : models.reduce((sum, m) => sum + (m.dailyRequestBudget ?? 0), 0);
+    : models.reduce((sum, m) => sum + (m.dailyRequestBudget ?? 0), 0) * apiKeys.length;
   // Its own list, NOT the lead plus extras: the point is to exclude models construction is happy with.
   // Deduped the same way, and undefined when unset so composition can reuse the one pool it already has.
   const writerSeen = new Set<string>();
@@ -270,6 +383,7 @@ export function requireLlmEnv(env: Env): LlmEnv {
   return {
     baseUrl,
     apiKey,
+    apiKeys,
     model,
     models,
     writerModels: writerPool.length === 0 ? undefined : (writerPool as [PoolModel, ...PoolModel[]]),

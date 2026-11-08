@@ -18,9 +18,10 @@
   `RETRIEVAL.MAX_RESULTS`. No LLM call; the one external call per node in the article pass is its search
 - `guardrail.agent.ts` — built (Phase 9). `assessCredibility` / `checkCredibility` gate on
   `CREDIBILITY` and **never throw and never drop a node** — a failure marks the article unverified.
-  Since 10.9 also the article guard: `assessGroundedness` (each citation's claim vs ITS source, lexical,
-  numbers must match, C124), `checkQuizSanity` (C125) and `guardArticle`, which drops ungrounded citations and a
-  broken quiz and never edits article text. All pure. Highest-risk layer, regression-tested
+  Since 10.9 also the article guard: `checkQuizSanity` (C125) and `guardArticle`, which drops citations whose url
+  is not a source and a broken quiz and never edits article text. Since C147 it no longer re-checks claims
+  against source text (`assessGroundedness` moved to `scripts/groundedness-metric.ts`, an offline metric). All pure.
+  Highest-risk layer, regression-tested
 - `writer.agent.ts` + `writer.prompt.ts` — built (Phase 10). `ArticleContext` → `WriterOutput`: the article AND its
   `QUIZ_CONFIG.QUESTIONS_PER_TOPIC` questions in ONE call (C74), sized by the node's own band rather than a
   sitewide cap (C85). Children are NAMED but never taught — `{topic, brief}` each (the brief the parent's
@@ -33,3 +34,7 @@
 
 **Design notes:**
 - Construction agents never call retrieval; evidence belongs to the article pass (`docs/conflicts.md` C05).
+
+**Phase C (C139):** `insight.agent.ts` + `insight.prompt.ts` - one call per learner refresh over counts inside
+`<signals>`, returning a `LearnerProfile`. `learner.prompt.ts` renders a profile for the root expand and writer
+prompts: enums as fixed sentences written in code, only `guidance` inside `<learner_notes>`; empty without one.

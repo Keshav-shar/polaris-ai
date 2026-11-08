@@ -5,6 +5,7 @@ import { createExpandNode } from "../../src/application/use-cases/expand-node.us
 import { createGetTree } from "../../src/application/use-cases/get-tree.use-case";
 import { createHaltRun } from "../../src/application/use-cases/halt-run.use-case";
 import { createHandleDeadLetter } from "../../src/application/use-cases/handle-dead-letter.use-case";
+import { createSetRunVisibility } from "../../src/application/use-cases/set-run-visibility.use-case";
 import { createStartTreeBuild } from "../../src/application/use-cases/start-tree-build.use-case";
 import { MAX_NODES_PER_RUN, WORKER } from "../../src/config/constants";
 import { createMemoryDedupStore } from "../../src/infrastructure/memory/memory-dedup.store";
@@ -13,6 +14,7 @@ import { createMemoryNodeStateStore } from "../../src/infrastructure/memory/memo
 import { createMemoryRunRepository } from "../../src/infrastructure/memory/memory-run.repository";
 import { createMemoryRunStateStore } from "../../src/infrastructure/memory/memory-run-state.store";
 import { createMemoryTreeRepository } from "../../src/infrastructure/memory/memory-tree.repository";
+import type { InsightPort } from "../../src/application/ports/insight.port";
 import { createLocalQueueWorker } from "../../src/interfaces/workers/local-queue-worker";
 import { fakeExpander, type FakeExpanderOptions } from "./fake-expander";
 import { failureReason } from "../../src/shared/failure-reason";
@@ -25,6 +27,8 @@ export type HarnessOptions = FakeExpanderOptions & {
   maxNodesPerRun?: number;
   // Undefined = no cost guard, which is what most tests want; set it to exercise the 429 path (C61).
   maxConcurrentRuns?: number;
+  // Learner insights read at kickoff for a signed-in caller (C139).
+  insights?: InsightPort;
 };
 
 // The whole in-memory construction stack with a fake expander in place of the LLM. The memory adapters
@@ -37,6 +41,7 @@ export function buildHarness(options: HarnessOptions = {}) {
     dailyRequestBudget,
     maxNodesPerRun,
     maxConcurrentRuns,
+    insights,
     ...expanderOptions
   } = options;
   const expander = fakeExpander(expanderOptions);
@@ -90,6 +95,7 @@ export function buildHarness(options: HarnessOptions = {}) {
     logger: log,
     dailyRequestBudget,
     maxConcurrentRuns,
+    insights,
   });
   // The harness's maxDepth unless a test passes its own, the way scripts/smoke-node.ts pins one.
   const startTreeBuild: typeof kickoff = {
@@ -128,6 +134,7 @@ export function buildHarness(options: HarnessOptions = {}) {
     handleDeadLetter,
     startTreeBuild,
     getTree: createGetTree({ runRepo, treeRepo, runState }),
+    setRunVisibility: createSetRunVisibility({ runRepo }),
     worker,
     // Runs a whole tree from a prompt and returns the run id.
     async build(prompt: string): Promise<string> {

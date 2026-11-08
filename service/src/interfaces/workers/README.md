@@ -15,3 +15,10 @@
 **Design notes:**
 - Handlers only parse the SQS record with `NodeMessage` and call a use-case; throwing lets SQS redeliver.
 - Bundled by `scripts/build-lambdas.mjs` into zips (`nodejs22.x`, no container images). Pseudocode: `docs/aws-retrofit.md`.
+
+**Phase 13 (2026-11-07):** `sqs-handler.ts` - the one AWS consumer policy (halted run dropped, quota halts the run,
+transport fault / held lease re-sent delayed and uncounted up to `QUEUE.STALL_MAX_RELEASES`, anything else
+recorded with `recordError` and reported in `batchItemFailures`); `queue-tail-handlers.ts` (dead-letter with the
+recorded reason, insight refresh); four entry points `expand-node`, `write-article`, `handle-dead-letter`,
+`refresh-insight` `.lambda.ts` (each one line over `createLambdaHandlers(getWorkerContainer)`); `sqs-poller.ts`, the
+local stand-in for the event source mapping (structural SQS, no SDK import).

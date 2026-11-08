@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   assessCredibility,
-  assessGroundedness,
   checkCredibility,
   checkQuizSanity,
   createGuardrailAgent,
@@ -47,7 +46,7 @@ describe("assessCredibility", () => {
   });
 
   it("counts two pages of ONE site as two sources, because the default provider is Wikipedia-only", () => {
-    // Deliberate: SEARCH_PROVIDER=wikipedia returns only wikipedia.org URLs, so a distinct-DOMAIN rule
+    // Deliberate: a Wikipedia-only result set (one provider, or the others failed) has only wikipedia.org URLs, so a distinct-DOMAIN rule
     // would make this gate unreachable and mark every article unverified. Distinctness is per document.
     const evidence = [
       source("https://en.wikipedia.org/w/index.php?curid=1", 0.75),
@@ -85,56 +84,6 @@ describe("checkCredibility", () => {
     expect(() => checkCredibility(weak)).not.toThrow();
     expect(checkCredibility(weak).verified).toBe(false);
     expect(() => checkCredibility([])).not.toThrow();
-  });
-});
-
-// C124: lexical groundedness. Sources below are real-shaped Wikipedia intro extracts.
-describe("assessGroundedness", () => {
-  const paging: EvidenceItem = {
-    url: "https://en.wikipedia.org/w/index.php?curid=311193",
-    title: "Memory paging",
-    snippet:
-      "In computer operating systems, memory paging is a memory management scheme that allows the physical " +
-      "memory used by a program to be non-contiguous. Pages are typically 4096 bytes in size.",
-    credibility: 0.9,
-  };
-  const cite = (claim: string, url = paging.url) => ({ url, claim });
-
-  it("grounds a claim whose content words are in the cited source, paraphrased word order included", () => {
-    const report = assessGroundedness([cite("Paging lets a program's physical memory be non-contiguous.")], [paging]);
-    expect(report.verdicts[0]).toMatchObject({ verdict: "grounded" });
-    expect(report.grounded).toBe(1);
-  });
-
-  it("rejects a claim the source does not say, even though it cites a real source", () => {
-    const report = assessGroundedness(
-      [cite("Paging was invented at Manchester University for the Atlas computer.")],
-      [paging],
-    );
-    expect(report.verdicts[0]).toMatchObject({ verdict: "ungrounded" });
-  });
-
-  it("rejects an invented number even when every other word matches", () => {
-    const report = assessGroundedness([cite("Pages are typically 8192 bytes in size.")], [paging]);
-    expect(report.verdicts[0]).toMatchObject({ verdict: "ungrounded", reason: "number 8192 not in the source" });
-    expect(assessGroundedness([cite("Pages are typically 4096 bytes in size.")], [paging]).grounded).toBe(1);
-  });
-
-  it("does not judge a claim too short to judge, and never counts it as grounded", () => {
-    const report = assessGroundedness([cite("Paging.")], [paging]);
-    expect(report.verdicts[0]).toMatchObject({ verdict: "unjudged" });
-    expect(report.grounded).toBe(0);
-  });
-
-  it("treats a citation to a url that is not one of the node's sources as ungrounded", () => {
-    const report = assessGroundedness([cite("Paging divides memory into pages.", "https://elsewhere.test/x")], [paging]);
-    expect(report.verdicts[0]).toMatchObject({ verdict: "ungrounded", reason: "not one of the node's sources" });
-  });
-
-  it("checks each citation against ITS OWN source, not against all evidence", () => {
-    const other: EvidenceItem = { ...paging, url: "https://en.wikipedia.org/w/index.php?curid=1", snippet: "Unrelated." };
-    const report = assessGroundedness([cite("Paging lets physical memory be non-contiguous.", other.url)], [paging, other]);
-    expect(report.verdicts[0]).toMatchObject({ verdict: "ungrounded" });
   });
 });
 
@@ -186,24 +135,36 @@ describe("guardArticle", () => {
     evidenceUrl: source.url,
   });
 
-  it("drops ungrounded citations, keeps grounded and unjudged ones, and never touches the article text", () => {
+  // C147 REGRESSION: the lexical re-check is off the write path. A citation whose claim its source does not say
+  // is KEPT now - the one multi-source search is the check (C146) - and the article text is never touched.
+  it("keeps every citation to one of the node's sources, without re-checking its claim against the source", () => {
+    const claims = [
+      "A TLB is a memory cache storing recent virtual-to-physical translations.",
+      "The TLB was patented by IBM in 1972 for mainframes.",
+      "TLB.",
+    ];
+    const { draft, report } = guardArticle(
+      { contentMd: "The TLB caches translations.", citations: claims.map((claim) => ({ url: source.url, claim })) },
+      [source],
+    );
+    expect(draft.contentMd).toBe("The TLB caches translations.");
+    expect(draft.citations.map((c) => c.claim)).toEqual(claims);
+    expect(report.foreignCitations).toBe(0);
+  });
+
+  it("drops a citation whose url is not one of the node's sources - an invented link - and counts it", () => {
     const { draft, report } = guardArticle(
       {
-        contentMd: "The TLB caches translations.",
+        contentMd: "x",
         citations: [
-          { url: source.url, claim: "A TLB is a memory cache storing recent virtual-to-physical translations." },
-          { url: source.url, claim: "The TLB was patented by IBM in 1972 for mainframes." },
-          { url: source.url, claim: "TLB." },
+          { url: source.url, claim: "A TLB caches translations." },
+          { url: "https://invented.example/tlb", claim: "A TLB caches translations." },
         ],
       },
       [source],
     );
-    expect(draft.contentMd).toBe("The TLB caches translations.");
-    expect(draft.citations.map((c) => c.claim)).toEqual([
-      "A TLB is a memory cache storing recent virtual-to-physical translations.",
-      "TLB.",
-    ]);
-    expect(report.groundedness).toMatchObject({ grounded: 1, ungrounded: 1, unjudged: 1 });
+    expect(draft.citations.map((c) => c.url)).toEqual([source.url]);
+    expect(report.foreignCitations).toBe(1);
   });
 
   it("drops a quiz with a sanity problem and keeps a sound one", () => {
@@ -226,6 +187,6 @@ describe("createGuardrailAgent", () => {
     const evidence = [source("https://a.example/1", 0.9), source("https://b.example/2", 0.9)];
     expect(agent.assessCredibility(evidence).verified).toBe(true);
     expect(agent.checkCredibility(evidence).verified).toBe(true);
-    expect(agent.assessGroundedness([], evidence)).toMatchObject({ grounded: 0, ungrounded: 0, unjudged: 0 });
+    expect(agent.guardArticle({ contentMd: "x", citations: [] }, evidence).report).toEqual({ foreignCitations: 0, quizProblems: [] });
   });
 });

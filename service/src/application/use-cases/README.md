@@ -28,3 +28,18 @@
 
 **Design notes:**
 - Every use-case that consumes a message must be idempotent (see the rules in `docs/aws-retrofit.md`).
+
+**Phase 12 (C105, C107, C137):** every read use-case takes an optional `caller` and answers 404 for a private run
+that is not theirs (`canReadRun`). `start-tree-build` takes `users` (present iff auth is on): no caller ->
+`UnauthenticatedError`; then `MAX_CONCURRENT_RUNS`, the depth check, the daily reservation LAST (so no other
+refusal spends one), pruning to `MAX_STORED_RUNS_PER_USER - 1`, and the run is created owned + private with its
+`request`. `list-runs` takes `{ scope, caller }` and `authRequired`. New `set-run-visibility.use-case.ts` (owner
+only, 404 to anyone else). `halt-run` and `fan-in` copy `statsOf(runState)` onto the run at each terminal
+transition; `get-tree` falls back to it when live counters are gone.
+
+**Phase C (C106, C138, C139):** `submit-quiz-attempt` (scored here; stored only for a signed-in caller),
+`record-progress` (first read only; sign-in required), `set-lesson-feedback` (tags only; sign-in required),
+`refresh-insight` (the background job: no call when nothing is new, under `INSIGHT.MIN_SIGNALS` or over the daily
+cap). `get-node` no longer sends the answer key and adds the caller's progress + feedback; `get-tree` adds the
+caller's per-node markers; `start-tree-build` reads the owner's insight (no LLM call) onto the root message;
+`halt-run` takes `onRunFinished`. Node-scoped use-cases share `application/tree/readable-node.ts`.

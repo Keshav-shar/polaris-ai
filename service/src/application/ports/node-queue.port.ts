@@ -13,6 +13,13 @@ export type NodeQueuePort = {
   promote(message: NodeMessage): Promise<"promoted" | "not-queued">;
 };
 
+// SQS only (A15): an SQS receive always counts toward maxReceiveCount, so a stall cannot be "released uncounted" the
+// way the memory queue does it. Instead the consumer re-sends a COPY with a delay, carrying its stall count and the
+// claimant of the article lease (so the copy still holds its own lease, A18), and acknowledges the original.
+export type StallRequeuePort = {
+  sendDelayed(message: NodeMessage, options: { delayMs: number; stallCount: number; claimant: string }): Promise<void>;
+};
+
 export type QueueReceipt = {
   receiptId: string;
   // 1 on first delivery. At QUEUE.MAX_RECEIVES the consumer dead-letters instead of redelivering.

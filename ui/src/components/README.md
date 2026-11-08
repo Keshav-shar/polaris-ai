@@ -50,7 +50,21 @@
 - ~~`article-view.tsx`~~ — folded into `scroll-reader.tsx` instead of a separate component: the article,
   its citations and the sourced/unverified badge are the reader's own content, not a reusable widget
 - `quiz-panel.tsx` — built (Phase 10, replacing the planned `quiz-widget.tsx`): renders the 3 questions
-  that came with the article ("Check your understanding"), scored client-side, revealing the right answer
-  and its source on submit. Attempts are stored from Phase C (C106)
+  that came with the article ("Check your understanding"), scored by the service since Phase C, revealing the
+  right answer and its source from the attempt's response. Attempts are stored for a signed-in learner (C106)
 - `scroll-branch.tsx` — one scroll and its descendants inside a codex; the indent IS the knowledge tree.
   Replaced `scroll-card.tsx`, which was deleted rather than left orphaned (C83)
+- `account-button.tsx` — Phase 12: header sign-in link (with `?next=`) or email + sign-out; nothing when auth is off
+- `sign-in-form.tsx` — email magic link (`signInWithOtp`) + GitHub (`signInWithOAuth`), both returning to
+  `/auth/callback`; provider error text never shown
+- `auth-callback.tsx` — waits for the PKCE exchange (explicit `exchangeCodeForSession` if the client did not), then
+  `takeNext()`; a failed link says so plainly
+- `share-control.tsx` — owner-only select: Only me / Anyone with the link / Everyone (`PATCH /api/trees/:runId`)
+- `codex-library.tsx` (Phase 12): "My maps" / "Explore" tabs (`scope`), reloads on sign-in/out, a sign-in prompt
+  on 401. `topic-form.tsx`: a sign-in prompt on 401 and a toast naming pruned maps. `run-panel.tsx`: the share
+  control for the owner
+
+**Phase C (C106, C138, C140):** `quiz-panel.tsx` now posts the answers and shows the key, explanations and sources
+from the response (the questions arrive without them); `lesson-feedback.tsx` (signed in: a thumb + closed tags,
+saved on each click); `scroll-reader.tsx` marks a written lesson read once per open when signed in;
+`tree-directory.tsx` shows the reader's ✓ read / best quick-check score per topic. No `/progress` page (C140).

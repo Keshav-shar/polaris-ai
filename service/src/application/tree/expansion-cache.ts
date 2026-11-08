@@ -1,4 +1,5 @@
 import { PROMPT_VERSION } from "../../config/constants";
+import type { LearnerProfile } from "../../domain/schemas/insight.schema";
 import type { Expansion, LayerPosition, NodeContext } from "../../domain/schemas/node.schema";
 import { normalizeTopic } from "../../domain/traversal/node-id";
 import { sha256Hex } from "../../shared/ids";
@@ -13,7 +14,15 @@ export type ExpansionCacheKeyParts = {
   position: LayerPosition;
   topic: string;
   ancestorTopics: readonly string[];
+  // learnerFingerprint() of the profile the call was shaped by (root only, C139). Without it one learner's cached
+  // root would be served to another whose profile asks for a different pitch.
+  learner?: string | undefined;
 };
+
+// A canonical spelling of the profile: same profile, same string, whatever order the preferences came in.
+export function learnerFingerprint(profile: LearnerProfile): string {
+  return [profile.level, [...profile.preferences].sort().join(","), profile.guidance].join(UNIT);
+}
 
 // Ancestor BRIEFS are deliberately excluded (the plan keys on ancestor topics): briefs vary run to run, so
 // including them would miss almost always and defeat the cache. Reusing normalizeTopic means two branches
@@ -23,9 +32,10 @@ const SEP = "\u0000";
 
 export function expansionCacheKey(parts: ExpansionCacheKeyParts): string {
   const ancestors = parts.ancestorTopics.map(normalizeTopic).join(UNIT);
-  return sha256Hex(
-    [PROMPT_VERSION, parts.namespace, parts.position, normalizeTopic(parts.topic), ancestors].join(SEP),
-  );
+  const key = [PROMPT_VERSION, parts.namespace, parts.position, normalizeTopic(parts.topic), ancestors];
+  // Appended only when present, so every profile-less key is the same as it would be without this field.
+  if (parts.learner !== undefined) key.push(parts.learner);
+  return sha256Hex(key.join(SEP));
 }
 
 // Bundles key derivation with the store so construct-node never learns about PROMPT_VERSION or the
@@ -48,6 +58,7 @@ export function createExpansionCacheDep(deps: {
         position: context.position,
         topic,
         ancestorTopics: context.ancestors.map((a) => a.topic),
+        learner: context.learner === undefined ? undefined : learnerFingerprint(context.learner),
       }),
     get: (key: string): Promise<Expansion | undefined> => deps.cache.get(key),
     put: (key: string, output: Expansion): Promise<void> => deps.cache.put(key, output),

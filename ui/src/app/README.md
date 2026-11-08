@@ -18,3 +18,5 @@
   always-visible focus ring and a `prefers-reduced-motion` block that stops every animation/transition
 - `codex/page.tsx` — "My library": one card per map, expanding into its lessons, client-side search
 - See the sub-folders for later routes.
+- `sign-in/page.tsx`, `auth/callback/page.tsx` — Phase 12: server shells around the client sign-in form and the
+  callback, each inside `<Suspense>` because they read `useSearchParams`

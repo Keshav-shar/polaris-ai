@@ -80,6 +80,30 @@ describe("createLlmFromEnv", () => {
       expect(stack.cacheNamespace()).toBe("openai/gpt-oss-120b");
     });
 
+    it("offers every model once per key and logs the key COUNT, never a key", () => {
+      const { logger, logs } = fakeLogger();
+      const env = parseEnv({ ...primary, LLM_API_KEY_NEXT: "groq-key-2", LLM_MODELS: "second-model" });
+      const stack = createLlmFromEnv(env, logger);
+      const oneKey = createLlmFromEnv(parseEnv({ ...primary, LLM_MODELS: "second-model" }));
+      expect(stack.activeModel()).toBe("openai/gpt-oss-120b");
+      // Same models, same answers: the second key must not cold-start the expansion cache.
+      expect(stack.cacheNamespace()).toBe(oneKey.cacheNamespace());
+      const line = logs.find((l) => l.msg === "llm selected");
+      expect(line?.context).toMatchObject({ keys: 2 });
+      expect(JSON.stringify(line)).not.toContain("groq-key");
+    });
+
+    it("keeps a one-model, two-key pool on the bare model namespace", () => {
+      const stack = createLlmFromEnv(parseEnv({ ...primary, LLM_API_KEY_NEXT: "groq-key-2" }));
+      expect(stack.cacheNamespace()).toBe("openai/gpt-oss-120b");
+    });
+
+    it("uses one key only when rotation is off", () => {
+      const { logger, logs } = fakeLogger();
+      createLlmFromEnv(parseEnv({ ...primary, LLM_API_KEY_NEXT: "groq-key-2", LLM_MODEL_ROTATION: "off" }), logger);
+      expect(logs.find((l) => l.msg === "llm selected")?.context).toMatchObject({ keys: 1 });
+    });
+
     it("sums every pool member's budget", () => {
       const stack = createLlmFromEnv(
         parseEnv({ ...primary, LLM_DAILY_REQUEST_BUDGET: "250", LLM_MODELS: "a=1000,b=1000" }),

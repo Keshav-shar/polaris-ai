@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiClientError, getTree, isRunInProgress } from "../lib/api-client";
 import { friendlyError } from "../lib/friendly-error";
+import { ShareControl } from "./share-control";
 import { flattenTree, indexTree } from "../lib/constellation-layout";
 import type { TreeResponse } from "../lib/contract";
 import { ConstellationView } from "./constellation-view";
@@ -113,6 +114,10 @@ export function RunPanel({ runId }: { runId: string }) {
             </span>
           </div>
 
+          {tree.run.isOwner === true && tree.run.visibility !== undefined ? (
+            <ShareControl runId={tree.run.runId} visibility={tree.run.visibility} />
+          ) : null}
+
           {tree.stats.nodesSkipped > 0 ? (
             // Complete as built, but narrower than maxDepth implies (docs/conflicts.md C60): presenting it
             // as the full tree would be a lie.
@@ -133,7 +138,13 @@ export function RunPanel({ runId }: { runId: string }) {
           ) : (
             <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
               <div className="lg:col-span-3">
-                <TreeDirectory tree={root} focusId={activeFocus} onFocus={setFocusId} nodeCount={nodeCount} />
+                <TreeDirectory
+                  tree={root}
+                  focusId={activeFocus}
+                  onFocus={setFocusId}
+                  nodeCount={nodeCount}
+                  progress={tree.progress}
+                />
               </div>
               <div className="lg:col-span-9">
                 <ConstellationView index={index} focusId={activeFocus} onFocus={setFocusId} />

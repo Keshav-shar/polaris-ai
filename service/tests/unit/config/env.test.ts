@@ -18,7 +18,7 @@ describe("parseEnv", () => {
       QUEUE_MODE: "memory",
       LLM_JSON_MODE: true,
       LLM_MAX_CONCURRENCY: 4,
-      SEARCH_PROVIDER: "wikipedia",
+      SEARCH_PROVIDERS: ["wikipedia", "crossref", "gdelt"],
     });
     expect(env.LLM_API_KEY).toBeUndefined();
   });
@@ -35,9 +35,22 @@ describe("parseEnv", () => {
     expect(env).toMatchObject({ API_PORT: 5050, LLM_JSON_MODE: false, LLM_MAX_CONCURRENCY: 2 });
   });
 
-  it("requires a Tavily key when Tavily is the search provider", () => {
-    expect(() => parseEnv({ SEARCH_PROVIDER: "tavily" })).toThrow(/TAVILY_API_KEY/);
-    expect(parseEnv({ SEARCH_PROVIDER: "tavily", TAVILY_API_KEY: "t" }).SEARCH_PROVIDER).toBe("tavily");
+  it("requires each keyed search provider's key (C146)", () => {
+    expect(() => parseEnv({ SEARCH_PROVIDERS: "wikipedia,tavily" })).toThrow(/TAVILY_API_KEY/);
+    expect(() => parseEnv({ SEARCH_PROVIDERS: "openalex" })).toThrow(/OPENALEX_API_KEY/);
+    expect(() => parseEnv({ SEARCH_PROVIDERS: "crossref, ieee" })).toThrow(/IEEE_API_KEY/);
+    expect(parseEnv({ SEARCH_PROVIDERS: "tavily", TAVILY_API_KEY: "t" }).SEARCH_PROVIDERS).toEqual(["tavily"]);
+  });
+
+  it("parses the provider list: trimmed, lower-cased, de-duplicated, order kept; unknown names refused", () => {
+    expect(parseEnv({ SEARCH_PROVIDERS: " Crossref ,wikipedia,crossref," }).SEARCH_PROVIDERS).toEqual(["crossref", "wikipedia"]);
+    expect(() => parseEnv({ SEARCH_PROVIDERS: "wikipedia,scholar" })).toThrow(/SEARCH_PROVIDERS/);
+    expect(parseEnv({ SEARCH_PROVIDERS: "" }).SEARCH_PROVIDERS).toEqual(["wikipedia", "crossref", "gdelt"]);
+  });
+
+  it("refuses a leftover SEARCH_PROVIDER=tavily instead of silently dropping Tavily, and ignores =wikipedia", () => {
+    expect(() => parseEnv({ SEARCH_PROVIDER: "tavily", TAVILY_API_KEY: "t" })).toThrow(/SEARCH_PROVIDERS/);
+    expect(parseEnv({ SEARCH_PROVIDER: "wikipedia" }).SEARCH_PROVIDERS).toEqual(["wikipedia", "crossref", "gdelt"]);
   });
 
   it("fails readably on invalid values without echoing them", () => {
@@ -63,6 +76,44 @@ describe("LLM configuration", () => {
     expect(isLlmConfigured(parseEnv(llm))).toBe(true);
   });
 
+  describe("Supabase pair (C137)", () => {
+    it("refuses half a Supabase config instead of silently running without auth", () => {
+      expect(() => parseEnv({ SUPABASE_URL: "https://x.supabase.co" })).toThrow(/SUPABASE_SERVICE_ROLE_KEY/);
+      expect(() => parseEnv({ SUPABASE_SERVICE_ROLE_KEY: "k" })).toThrow(/SUPABASE_URL/);
+    });
+
+    it("defaults the per-user caps from USER_LIMITS", () => {
+      const env = parseEnv({});
+      expect(env.MAX_RUNS_PER_USER_PER_DAY).toBeGreaterThan(0);
+      expect(env.MAX_STORED_RUNS_PER_USER).toBeGreaterThan(0);
+    });
+  });
+
+  describe("LLM_API_KEY_NEXT", () => {
+    const base = { LLM_BASE_URL: "https://api.groq.com/openai/v1", LLM_API_KEY: "k1", LLM_MODEL: "m" };
+
+    it("adds a second account key after the first", () => {
+      expect(requireLlmEnv(parseEnv({ ...base, LLM_API_KEY_NEXT: "k2" })).apiKeys).toEqual(["k1", "k2"]);
+      expect(requireLlmEnv(parseEnv(base)).apiKeys).toEqual(["k1"]);
+    });
+
+    it("ignores a repeat of the first key and an empty value", () => {
+      expect(requireLlmEnv(parseEnv({ ...base, LLM_API_KEY_NEXT: "k1" })).apiKeys).toEqual(["k1"]);
+      expect(requireLlmEnv(parseEnv({ ...base, LLM_API_KEY_NEXT: "" })).apiKeys).toEqual(["k1"]);
+    });
+
+    it("counts every member's budget once per account", () => {
+      const env = parseEnv({
+        ...base,
+        LLM_API_KEY_NEXT: "k2",
+        LLM_DAILY_REQUEST_BUDGET: "100",
+        LLM_MODELS: "b=200",
+      });
+      // (100 + 200) per organization, two organizations.
+      expect(requireLlmEnv(env).dailyRequestBudget).toBe(600);
+    });
+  });
+
   it("requireLlmEnv names the missing variables", () => {
     expect(() => requireLlmEnv(parseEnv({ LLM_API_KEY: "k" }))).toThrow(/LLM_BASE_URL, LLM_MODEL/);
   });
@@ -71,6 +122,7 @@ describe("LLM configuration", () => {
     expect(requireLlmEnv(parseEnv(llm))).toEqual({
       baseUrl: llm.LLM_BASE_URL,
       apiKey: llm.LLM_API_KEY,
+      apiKeys: [llm.LLM_API_KEY],
       model: llm.LLM_MODEL,
       // Always a pool, even with no LLM_MODELS: the lead alone, so every downstream reader has one shape.
       models: [{ id: llm.LLM_MODEL, dailyRequestBudget: undefined }],

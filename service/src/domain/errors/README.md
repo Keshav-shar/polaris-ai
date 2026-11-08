@@ -15,3 +15,14 @@
 - `transport-unavailable.error.ts` — `TransportUnavailableError(target, detail)`, code `TRANSPORT_UNAVAILABLE`: the HTTP request never completed, so there is no status and the provider did nothing. Its own error because the pool must NOT rotate (every member shares the transport) and the queue must NOT count it against the node (C94). HTTP 503 with a short `Retry-After`
 - `run-not-found.error.ts` — `RunNotFoundError(runId)`, code `RUN_NOT_FOUND` (HTTP 404, mapped in Phase 7; written in Phase 6)
 - `run-in-progress.error.ts` — `RunInProgressError(active, limit)`, code `RUN_IN_PROGRESS`: `MAX_CONCURRENT_RUNS` reached, so `POST /api/trees` refuses to start a second build rather than doubling the quota draw. A cost guard, not a failure - it is thrown before any work, so a refusal costs nothing (and since C100 an accepted kickoff makes no LLM call either). **HTTP 429 with `Retry-After`** (written in Phase 7, C61)
+- `unauthenticated.error.ts` — `UnauthenticatedError(message?)`, code `UNAUTHENTICATED`: no / invalid / expired
+  sign-in where one is needed. **HTTP 401 `unauthenticated`** + `WWW-Authenticate: Bearer` (Phase 12, C105)
+- `user-quota-exhausted.error.ts` — `UserQuotaExhaustedError(limit, retryAfterMs)`, code `USER_QUOTA_EXHAUSTED`:
+  `MAX_RUNS_PER_USER_PER_DAY` reached. **HTTP 429 `user_quota_exhausted`**, `Retry-After` = until UTC midnight
+- `dependency-unavailable.error.ts` — `DependencyUnavailableError(dependency, operation, detail)`, code
+  `DEPENDENCY_UNAVAILABLE`: the database or the sign-in key set did not answer. **HTTP 503 `service_unavailable`**;
+  `detail` (an SDK string) is logged, never returned
+
+**Phase C:** `quiz-not-found.error.ts` - a quiz attempt on a lesson with no questions (404 `quiz_not_found`).
+
+**Phase 13 (A18):** `article-lease-held.error.ts` - another delivery holds the article claim; a stall, never a failure.
